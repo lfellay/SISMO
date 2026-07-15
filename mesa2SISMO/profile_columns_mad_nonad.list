@@ -1,0 +1,98 @@
+! Custom MESA profile columns for mesa2SISMO -> MAD/intSISMO/nonad.
+!
+! This file only lists standard MESA profile columns.  The four MAD EOS
+! second derivatives Cprho, CpT, Qrho, and QT are not standard profile columns;
+! they must be added by a MESA run_star_extras extra-profile-column hook.
+!
+! Use in a MESA inlist with:
+!
+!   &star_job
+!      profile_columns_file = 'profile_columns_mad_nonad.list'
+!   /
+!
+! MESA writes profile rows from surface to center.
+
+! Mesh and structure
+   zone
+   mass
+   mass_grams
+   q
+   dm
+   logR
+   radius_cm
+   grav
+
+! Thermodynamic state
+   logT
+   temperature
+   logRho
+   rho
+   logP
+   pressure
+   pgas
+   prad
+   mu
+   energy
+   entropy
+
+! EOS quantities exposed by standard MESA profiles
+   grada
+   gamma1
+   gamma3
+   chiRho
+   chiT
+   cp
+   cv
+   dE_dRho
+   csound
+
+! Luminosity and transport
+   luminosity
+   lum_erg_s
+   lum_rad
+   lum_conv
+   lum_rad_div_L
+   lum_conv_div_L
+   conv_L_div_L
+   opacity
+   dkap_dlnrho_face
+   dkap_dlnT_face
+
+! Convection and gradients
+   gradT
+   gradr
+   gradL
+   grada_face
+   mlt_gradT
+   mlt_Gamma
+   mlt_mixing_length
+   alpha_mlt
+   conv_vel
+   mlt_vc
+
+! Energy generation
+   eps_grav
+   eps_nuc
+   d_lnepsnuc_dlnd
+   d_lnepsnuc_dlnT
+
+! Optical depth and oscillation diagnostics
+   tau
+   logtau
+   brunt_N2
+   brunt_A
+   brunt_N2_dimensionless
+
+! Composition
+   x_mass_fraction_H
+   y_mass_fraction_He
+   z_mass_fraction_metals
+   x
+   y
+   z
+   h1
+   he3
+   he4
+   c12
+   n14
+   o16
