@@ -1,9 +1,10 @@
 # mesa2SISMO
 
 This directory contains the MESA-side profile output setup and the
-`mesa2SISMO` converter. The converter writes the MAD `.madmod` structure read
-by `intSISMO`, so the profile output must contain the thermodynamic, opacity,
-luminosity, nuclear, and convection quantities used by the nonadiabatic code.
+`mesa2SISMO` converter. The normal route is adiabatic: it needs only the
+mechanical stellar structure and writes a compact, versioned `.madmod` file
+read by `intSISMO`. The full legacy non-adiabatic format remains available as
+an explicit option.
 
 ## Converter
 
@@ -20,25 +21,22 @@ Convert a MESA profile:
 ./mesa2SISMO /path/to/MESA-work/LOGS/profile1.data /path/to/models/model.madmod
 ```
 
-Use `--adiabatic` (or `--ad`) when the output is only meant for
-`intSISMO -> OSC/SISMO`. In that mode the converter writes the same fixed
-`.madmod` binary layout but forces `npa=0`, takes the outer MESA row as the
-adiabatic radius, and leaves the non-adiabatic EOS, opacity, convection,
-thermal, and atmosphere fields neutral.  Only the columns needed for the
-adiabatic mechanical structure are required: mass, radius, pressure, density,
-and `Gamma1`; temperature, composition, luminosity, and gradients are used when
-available.
+No physics flag is needed. The required MESA columns are:
 
-The MAD radius is defined at the atmosphere base: the first inward row with
-`tau >= 2/3` is written with `r/R=1` and becomes the raccord point between the
-interior and atmosphere.  If the input profile contains rows above that point,
-the converter keeps them as the MAD atmosphere (`npa`).  If the MESA profile
-stops at `tau=2/3`, the converter writes `npa=0`; it never invents atmospheric
-layers.
+```text
+mass or mass_grams
+radius_cm
+rho
+pressure
+gamma1
+```
 
-The zone table in the `.madmod` file is derived from the profile itself:
-radiative zones are class 1, convective zones are class 2, and atmosphere
-points above `npi`, when present in the MESA profile, are class 3.
+The output contains only the versioned adiabatic structure needed by
+`intSISMO`. Use the matching updated `intSISMO` executable; older binaries
+cannot read the `SISMOAD2` compact header. The older `--adiabatic` and
+`--ad` options remain accepted as compatibility no-ops for existing scripts.
+`brunt_N2` is optional and is retained only as an adiabatic grid-weighting
+quantity for `intSISMO ... bv`; it defaults to zero when absent.
 
 Then run `intSISMO` to remesh the model and write the SISMO/OSC input files:
 
@@ -47,29 +45,28 @@ cd /path/to/models
 /path/to/SISMO/bin/intSISMO model.madmod 25000 16 radial
 ```
 
-This creates `MESA-1M5-638Myr.osc.mod` and the companion
-`MESA-1M5-638Myr.grid.d`. Keep both files together. `intSISMO` is the SISMO
-remesher; it does not replace the separate legacy MAD nonadiabatic workflow
-and does not write a `sta1.d` model.
+This creates `model.osc.mod` and the companion `model.grid.d`. Keep both
+files together. `intSISMO` is the SISMO remesher and does not write a
+`sta1.d` model.
 
-## Custom Profile Columns
+## Adiabatic MESA profile
 
-Use `profile_columns_mad_nonad.list` as the MESA `profile_columns_file`.
-It contains only standard MESA profile columns, with the columns kept explicit
-rather than inherited with `include ''`.
+Use `profile_columns_sismo_adiabatic.list` as the MESA
+`profile_columns_file`. It contains the small standard-column set required by
+the default converter.
 
 Install it in a MESA work directory:
 
 ```sh
-cp /path/to/SISMO/mesa2SISMO/profile_columns_mad_nonad.list /path/to/MESA-work/profile_columns_mad_nonad.list
+cp /path/to/SISMO/mesa2SISMO/profile_columns_sismo_adiabatic.list \
+   /path/to/MESA-work/profile_columns_sismo_adiabatic.list
 ```
 
 Then set the profile column file in the MESA inlist:
 
 ```fortran
 &star_job
-   profile_columns_file = 'profile_columns_mad_nonad.list'
-   warn_run_star_extras = .false.
+   profile_columns_file = 'profile_columns_sismo_adiabatic.list'
 /
 ```
 
@@ -78,15 +75,39 @@ directory where `./rn` is executed.  An absolute path can also be used:
 
 ```fortran
 &star_job
-   profile_columns_file = '/path/to/SISMO/mesa2SISMO/profile_columns_mad_nonad.list'
-   warn_run_star_extras = .false.
+   profile_columns_file = '/path/to/SISMO/mesa2SISMO/profile_columns_sismo_adiabatic.list'
 /
 ```
 
 Profiles are written in `LOGS/profile*.data`; the rows are ordered from
 surface to center.
 
-## MESA Atmosphere Setup
+## Optional full non-adiabatic output
+
+Request the full legacy format explicitly:
+
+```sh
+./mesa2SISMO /path/to/MESA-work/LOGS/profile1.data \
+  /path/to/models/model.madmod --nonad
+```
+
+For this route, use `profile_columns_mad_nonad.list` as the MESA
+`profile_columns_file`. It contains the standard thermodynamic, opacity,
+luminosity, nuclear, convection, composition, and atmosphere columns required
+by the full conversion. The four custom EOS derivatives described below must
+also be supplied through `run_star_extras`.
+
+To use the resulting full input explicitly in `intSISMO`:
+
+```sh
+intSISMO model.madmod 25000 16 radial --nonad
+```
+
+`intSISMO` validates the full input and retains its atmosphere and zone
+structure during remeshing. Its `.osc.mod` output contains only the
+mechanical structure, and SISMO itself remains adiabatic.
+
+### MESA atmosphere setup
 
 Use an explicit MESA atmosphere boundary so the photospheric/raccord point is
 well defined:
@@ -110,18 +131,18 @@ points down to the requested outer optical depth:
 /
 ```
 
-In MESA r26.4.1, `atm_build_*` affects pulse-data atmospheres, not necessarily
-the normal `profile*.data` mesh. Since `mesa2SISMO` does not create an
-atmosphere, any atmosphere used by a MAD nonadiabatic calculation must be exported by MESA with all
-the nonadiabatic profile columns.  The OSC/pulse atmosphere is useful for
-adiabatic checks, but by itself it is not a complete MAD nonadiabatic profile
-because it does not contain the extra EOS/opacity/convection derivatives.
+In the full legacy format, the MAD radius is the first inward row with
+`tau >= 2/3`. Rows above it are retained as the atmosphere; `mesa2SISMO`
+never invents atmospheric layers. In MESA r26.4.1, `atm_build_*` affects
+pulse-data atmospheres, not necessarily the normal `profile*.data` mesh.
+Any atmosphere needed by the full non-adiabatic route must therefore be
+present in the profile with all required quantities.
 
-## Quantities Still Requiring MESA Custom Output
+### Quantities requiring MESA custom output
 
-The standard `profile_columns_file` mechanism cannot invent new columns.  The
-following MAD EOS derivatives are not standard MESA profile columns and should
-be exported through `run_star_extras` extra profile columns:
+These quantities are needed only with `--nonad`. The standard
+`profile_columns_file` mechanism cannot create them, so export them through
+`run_star_extras` extra profile columns:
 
 ```text
 Cprho = (d ln Cp / d ln rho)_T

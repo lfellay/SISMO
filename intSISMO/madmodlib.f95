@@ -10,18 +10,24 @@
 
 module madmodlib
   use, intrinsic :: iso_fortran_env, only : int64
+  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
   implicit none
   private
 
   integer, parameter :: MAX_MODEL_POINTS = 2000000
+  character(len=8), parameter :: COMPACT_MAGIC = 'SISMOAD2'
 
   public :: tMadmod, readmadmod, DeleteMadmod
 
   type tMadmod
     integer :: npi = 0, npa = 0, np = 0, nz = 0, step = 0
+    logical :: compact_adiabatic = .false.
+    logical :: nonadiabatic_available = .false.
     integer,  allocatable :: zones(:,:)
-    real(8) :: mass, radius, Teff, Lum, age, logg, LgOverL, alphaConv, &
-               alphaOver, X0, Z0, diff, Grav, aRad, sigmaSB
+    real(8) :: mass = 0d0, radius = 0d0, Teff = 0d0, Lum = 0d0
+    real(8) :: age = 0d0, logg = 0d0, LgOverL = 0d0, alphaConv = 0d0
+    real(8) :: alphaOver = 0d0, X0 = 0d0, Z0 = 0d0, diff = 0d0
+    real(8) :: Grav = 0d0, aRad = 0d0, sigmaSB = 0d0
     ! Interior + atmosphere fields (1:np)
     real(8), allocatable, dimension(:) :: r, m, &
       rho, T, L, P, Cv, &
@@ -47,13 +53,19 @@ module madmodlib
 
 contains
 
-  subroutine readmadmod(fn, star)
+  subroutine readmadmod(fn, star, require_nonadiabatic)
     character(len=*), intent(in) :: fn
     type(tMadmod),    intent(out) :: star
+    logical, intent(in), optional :: require_nonadiabatic
 
     integer :: io, np, npi, npa, nz, np1, ios, alloc_stat
     integer(int64) :: file_size, expected_size, integer_bytes, real_bytes
     character(len=512) :: iomsg, alloc_msg
+    character(len=8) :: magic
+    logical :: require_full
+
+    require_full = .false.
+    if (present(require_nonadiabatic)) require_full = require_nonadiabatic
 
     open(newunit=io, file=fn, action='read', status='old', &
          form='unformatted', access='stream', convert='little_endian', &
@@ -64,7 +76,38 @@ contains
        stop 1
     end if
 
-    read(io, iostat=ios, iomsg=iomsg) star%npi, star%npa, star%np, star%nz, star%step
+    inquire(unit=io, size=file_size, iostat=ios, iomsg=iomsg)
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - cannot determine size of ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       stop 1
+    end if
+    if (file_size < len(COMPACT_MAGIC)) then
+       write(*,'(A,A)') 'readmadmod: ERROR - model file is too short: ', trim(fn)
+       close(io)
+       stop 1
+    end if
+
+    read(io, pos=1, iostat=ios, iomsg=iomsg) magic
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - format probe failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       stop 1
+    end if
+    if (magic == COMPACT_MAGIC) then
+       call read_compact_model(io, fn, file_size, star)
+       if (require_full) then
+          write(*,'(A)') 'readmadmod: ERROR - --nonad requires a full legacy non-adiabatic .madmod.'
+          write(*,'(A,A)') 'readmadmod: compact adiabatic input: ', trim(fn)
+          call DeleteMadmod(star)
+          stop 1
+       end if
+       return
+    end if
+
+    read(io, pos=1, iostat=ios, iomsg=iomsg) star%npi, star%npa, star%np, star%nz, star%step
     if (ios /= 0) then
        write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - header read failed in ', &
             trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
@@ -93,13 +136,6 @@ contains
        stop 1
     end if
 
-    inquire(unit=io, size=file_size, iostat=ios, iomsg=iomsg)
-    if (ios /= 0) then
-       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - cannot determine size of ', &
-            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
-       close(io)
-       stop 1
-    end if
     integer_bytes = int(storage_size(star%npi)/8, int64)
     real_bytes = int(storage_size(star%mass)/8, int64)
     expected_size = 5_int64*integer_bytes + 15_int64*real_bytes + &
@@ -168,6 +204,15 @@ contains
     end if
 
     if (npa == 0) then
+       star%compact_adiabatic = .false.
+       star%nonadiabatic_available = valid_nonadiabatic_block(star)
+       if (require_full .and. .not. star%nonadiabatic_available) then
+          write(*,'(A)') 'readmadmod: ERROR - --nonad requires populated non-adiabatic fields.'
+          write(*,'(A,A)') 'readmadmod: neutral or incomplete legacy input: ', trim(fn)
+          close(io)
+          call DeleteMadmod(star)
+          stop 1
+       end if
        close(io, iostat=ios, iomsg=iomsg)
        if (ios /= 0) then
           write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - close failed for ', &
@@ -217,7 +262,141 @@ contains
        call DeleteMadmod(star)
        stop 1
     end if
+    star%compact_adiabatic = .false.
+    star%nonadiabatic_available = valid_nonadiabatic_block(star)
+    if (require_full .and. .not. star%nonadiabatic_available) then
+       write(*,'(A)') 'readmadmod: ERROR - --nonad requires populated non-adiabatic fields.'
+       write(*,'(A,A)') 'readmadmod: neutral or incomplete legacy input: ', trim(fn)
+       call DeleteMadmod(star)
+       stop 1
+    end if
   end subroutine readmadmod
+
+
+  subroutine read_compact_model(io, fn, file_size, star)
+    integer, intent(in) :: io
+    character(len=*), intent(in) :: fn
+    integer(int64), intent(in) :: file_size
+    type(tMadmod), intent(inout) :: star
+
+    integer :: ios, alloc_stat, np, nz
+    integer(int64) :: expected_size, integer_bytes, real_bytes
+    character(len=512) :: iomsg, alloc_msg
+
+    read(io, pos=len(COMPACT_MAGIC)+1, iostat=ios, iomsg=iomsg) &
+         star%npi, star%npa, star%np, star%nz, star%step
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - compact header read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       stop 1
+    end if
+
+    np = star%np
+    nz = star%nz
+    if (np < 1 .or. np > MAX_MODEL_POINTS .or. star%npi /= np .or. &
+         star%npa /= 0 .or. nz < 1 .or. nz > np) then
+       write(*,'(A,A)') 'readmadmod: ERROR - invalid compact adiabatic dimensions in ', trim(fn)
+       write(*,'(A,I0,A,I0,A,I0,A,I0)') 'readmadmod: npi=', star%npi, &
+            ' npa=', star%npa, ' np=', np, ' nz=', nz
+       close(io)
+       stop 1
+    end if
+
+    integer_bytes = int(storage_size(star%npi)/8, int64)
+    real_bytes = int(storage_size(star%mass)/8, int64)
+    expected_size = int(len(COMPACT_MAGIC), int64) + 5_int64*integer_bytes + &
+         3_int64*real_bytes + 3_int64*int(nz,int64)*integer_bytes + &
+         6_int64*int(np,int64)*real_bytes
+    if (file_size /= expected_size) then
+       write(*,'(A,A)') 'readmadmod: ERROR - compact model has an unexpected size: ', trim(fn)
+       write(*,'(A,I0,A,I0)') 'readmadmod: file bytes=', file_size, &
+            ' expected bytes=', expected_size
+       close(io)
+       stop 1
+    end if
+
+    read(io, iostat=ios, iomsg=iomsg) star%mass, star%radius, star%Grav
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - compact globals read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       stop 1
+    end if
+
+    alloc_msg = ''
+    allocate(star%zones(3,nz), star%r(np), star%m(np), star%rho(np), &
+         star%P(np), star%Gam1(np), star%n2(np), stat=alloc_stat, errmsg=alloc_msg)
+    if (alloc_stat /= 0) then
+       write(*,'(A,A,A,A)') 'readmadmod: ERROR - compact allocation failed for ', &
+            trim(fn), ': ', trim(alloc_msg)
+       close(io)
+       call DeleteMadmod(star)
+       stop 1
+    end if
+
+    read(io, iostat=ios, iomsg=iomsg) star%zones, star%r, star%m, star%rho, &
+         star%P, star%Gam1, star%n2
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - compact data read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       call DeleteMadmod(star)
+       stop 1
+    end if
+
+    close(io, iostat=ios, iomsg=iomsg)
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - compact close failed for ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       call DeleteMadmod(star)
+       stop 1
+    end if
+    star%compact_adiabatic = .true.
+    star%nonadiabatic_available = .false.
+  end subroutine read_compact_model
+
+
+  logical function valid_nonadiabatic_block(star)
+    type(tMadmod), intent(in) :: star
+    integer :: n
+
+    valid_nonadiabatic_block = .false.
+    ! Some historical full files use neutral placeholders in atmosphere-only
+    ! records. Validate the populated interior block without rejecting those
+    ! otherwise readable legacy models.
+    n = star%npi
+    if (n < 1) return
+    if (.not. allocated(star%T) .or. .not. allocated(star%Cv) .or. &
+         .not. allocated(star%Gam31) .or. .not. allocated(star%Prho) .or. &
+         .not. allocated(star%PT) .or. .not. allocated(star%Cp) .or. &
+         .not. allocated(star%Cprho) .or. .not. allocated(star%CpT) .or. &
+         .not. allocated(star%Q) .or. .not. allocated(star%Qrho) .or. &
+         .not. allocated(star%QT) .or. .not. allocated(star%kappa) .or. &
+         .not. allocated(star%L) .or. .not. allocated(star%gradAd) .or. &
+         .not. allocated(star%grad) .or. .not. allocated(star%gradRad) .or. &
+         .not. allocated(star%X) .or. .not. allocated(star%Z)) return
+    if (.not. ieee_is_finite(star%Lum) .or. star%Lum <= 0d0) return
+    if (any(.not. ieee_is_finite(star%T(1:n))) .or. any(star%T(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%Cv(1:n))) .or. any(star%Cv(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%Gam31(1:n))) .or. any(star%Gam31(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%Prho(1:n))) .or. any(star%Prho(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%PT(1:n))) .or. any(star%PT(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%Cp(1:n))) .or. any(star%Cp(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%kappa(1:n))) .or. any(star%kappa(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%gradAd(1:n))) .or. any(star%gradAd(1:n) <= 0d0)) return
+    if (any(.not. ieee_is_finite(star%L(1:n))) .or. &
+         any(.not. ieee_is_finite(star%grad(1:n))) .or. &
+         any(.not. ieee_is_finite(star%gradRad(1:n))) .or. &
+         any(.not. ieee_is_finite(star%X(1:n))) .or. &
+         any(.not. ieee_is_finite(star%Z(1:n)))) return
+    if (any(.not. ieee_is_finite(star%Cprho(1:n))) .or. &
+         any(.not. ieee_is_finite(star%CpT(1:n))) .or. &
+         any(.not. ieee_is_finite(star%Q(1:n))) .or. &
+         any(.not. ieee_is_finite(star%Qrho(1:n))) .or. &
+         any(.not. ieee_is_finite(star%QT(1:n)))) return
+    valid_nonadiabatic_block = .true.
+  end function valid_nonadiabatic_block
 
 
   subroutine DeleteMadmod(star)
@@ -302,6 +481,11 @@ contains
     star%npa = 0
     star%np  = 0
     star%nz  = 0
+    star%compact_adiabatic = .false.
+    star%nonadiabatic_available = .false.
+    star%mass = 0d0
+    star%radius = 0d0
+    star%Grav = 0d0
   end subroutine DeleteMadmod
 
 end module madmodlib

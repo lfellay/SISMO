@@ -1,4 +1,8 @@
-! Custom MESA profile columns for mesa2SISMO -> MAD/intSISMO/nonad.
+! Optional full non-adiabatic MESA profile for:
+!   mesa2SISMO profile.data model.madmod --nonad
+!
+! The normal SISMO route is adiabatic and uses
+! profile_columns_sismo_adiabatic.list instead.
 !
 ! This file only lists standard MESA profile columns.  The four MAD EOS
 ! second derivatives Cprho, CpT, Qrho, and QT are not standard profile columns;

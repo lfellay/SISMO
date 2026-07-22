@@ -16,48 +16,23 @@ program intSISMO
   integer, parameter :: PATH_LEN = 4096
   integer, parameter :: MAX_OSC_POINTS = 2000000
 
-  integer :: narg, ios, ldat, argument_length, points_written, clock_count
+  integer :: ios, ldat, points_written, clock_count
   integer :: N6, N6_requested, NN1, NN1a, nz_osc, GRID_STEP
   character(len=PATH_LEN) :: dat, basefile, madmod, oscfile
   character(len=32) :: CN6, CSTEP, CMODE, GRID_MODE
+  character(len=16) :: input_mode
   character(len=96) :: transaction_tag
   character(len=:), allocatable :: gridfile, osc_temp, grid_temp, lock_path
   logical :: exst, osc_ok, grid_ok, grid_owned, commit_ok, path_ok
+  logical :: have_grid_step, have_grid_mode, nonadiabatic_mode
   type(tMadmod) :: star
   integer, allocatable :: zones_osc(:,:)
 
   write(UNIT_STDOUT,*) '---------------------------------------------------'
   write(UNIT_STDOUT,*) '**** intSISMO ****'
 
-  narg = command_argument_count()
-  if (narg == 1) then
-     call get_command_argument(1, dat, status=ios)
-     if (ios == 0 .and. (trim(dat) == '--help' .or. trim(dat) == '-h')) then
-        call print_usage()
-        stop
-     end if
-  end if
-  if (narg < 2 .or. narg > 4) then
-     call print_usage()
-     stop 1
-  end if
-
-  call get_command_argument(1, length=argument_length, status=ios)
-  if (ios /= 0 .or. argument_length < 1) then
-     write(UNIT_STDOUT,*) 'intSISMO: invalid first command-line argument.'
-     stop 1
-  end if
-  if (argument_length > len(dat)) then
-     write(UNIT_STDOUT,*) 'intSISMO: input path is too long: ', argument_length, &
-          ' characters; maximum is ', len(dat)
-     stop 1
-  end if
-
-  call get_command_argument(1, dat, status=ios)
-  if (ios /= 0 .or. len_trim(dat) == 0) then
-     write(UNIT_STDOUT,*) 'intSISMO: invalid first command-line argument.'
-     stop 1
-  end if
+  call parse_command_line(dat, CN6, CSTEP, CMODE, have_grid_step, &
+       have_grid_mode, nonadiabatic_mode)
 
   basefile = trim(dat)
   ldat = len_trim(basefile)
@@ -87,11 +62,6 @@ program intSISMO
      stop 1
   end if
 
-  call get_command_argument(2, CN6, status=ios)
-  if (ios /= 0 .or. len_trim(CN6) == 0) then
-     write(UNIT_STDOUT,*) 'intSISMO: missing/invalid OSC grid-size argument.'
-     stop 1
-  end if
   read(CN6, *, iostat=ios) N6
   if (ios /= 0 .or. N6 < 8 .or. N6 > MAX_OSC_POINTS) then
      write(UNIT_STDOUT,*) 'intSISMO: invalid OSC grid size: ', trim(CN6)
@@ -102,12 +72,7 @@ program intSISMO
 
   GRID_STEP = 1
   GRID_MODE = 'radial'
-  if (narg >= 3) then
-     call get_command_argument(3, CSTEP, status=ios)
-     if (ios /= 0 .or. len_trim(CSTEP) == 0) then
-        write(UNIT_STDOUT,*) 'intSISMO: missing/invalid GRID_STEP argument.'
-        stop 1
-     end if
+  if (have_grid_step) then
      read(CSTEP, *, iostat=ios) GRID_STEP
      if (ios /= 0 .or. GRID_STEP < 1 .or. GRID_STEP > MAX_OSC_POINTS) then
         write(UNIT_STDOUT,*) 'intSISMO: GRID_STEP must be in 1..', &
@@ -115,12 +80,7 @@ program intSISMO
        stop 1
      end if
   end if
-  if (narg >= 4) then
-     call get_command_argument(4, CMODE, status=ios)
-     if (ios /= 0 .or. len_trim(CMODE) == 0) then
-        write(UNIT_STDOUT,*) 'intSISMO: missing/invalid GRID_MODE argument.'
-        stop 1
-     end if
+  if (have_grid_mode) then
      GRID_MODE = normalize_grid_mode(CMODE)
      if (len_trim(GRID_MODE) == 0) then
         write(UNIT_STDOUT,*) 'intSISMO: GRID_MODE must be radial or bv: ', trim(CMODE)
@@ -134,8 +94,19 @@ program intSISMO
   end if
 
   write(UNIT_STDOUT,*) '** intSISMO: reading .madmod file ..'
-  call readmadmod(madmod, star)
+  call readmadmod(madmod, star, require_nonadiabatic=nonadiabatic_mode)
   write(UNIT_STDOUT,*) '** intSISMO: reading .madmod file: done **'
+  if (star%compact_adiabatic) then
+     write(UNIT_STDOUT,*) 'Input model format          = compact adiabatic SISMOAD2'
+  else
+     write(UNIT_STDOUT,*) 'Input model format          = full legacy MADMOD'
+  end if
+  if (nonadiabatic_mode) then
+     input_mode = 'nonadiabatic'
+  else
+     input_mode = 'adiabatic'
+  end if
+  write(UNIT_STDOUT,*) 'Input physics mode         = ', trim(input_mode)
 
   NN1 = star%npi
   NN1a = star%np
@@ -184,7 +155,7 @@ program intSISMO
   end if
 
   call write_grid_step_metadata(grid_temp, GRID_STEP, N6_requested, N6, &
-       GRID_MODE, grid_ok, grid_owned)
+       GRID_MODE, input_mode, grid_ok, grid_owned)
   if (.not. grid_ok) then
     call remove_regular_file(osc_temp, path_ok)
      if (.not. path_ok) write(UNIT_STDOUT,*) &
@@ -222,10 +193,129 @@ program intSISMO
 
 contains
 
+  subroutine parse_command_line(input_name, grid_size, grid_step_text, &
+       grid_mode_text, have_step, have_mode, use_nonadiabatic)
+    implicit none
+
+    character(len=*), intent(out) :: input_name, grid_size, grid_step_text
+    character(len=*), intent(out) :: grid_mode_text
+    logical, intent(out) :: have_step, have_mode, use_nonadiabatic
+
+    integer :: argc, iarg, arg_length, arg_status, npos
+    character(len=PATH_LEN) :: argument, positional(4)
+    logical :: mode_selected
+
+    input_name = ''
+    grid_size = ''
+    grid_step_text = ''
+    grid_mode_text = ''
+    positional = ''
+    npos = 0
+    have_step = .false.
+    have_mode = .false.
+    use_nonadiabatic = .false.
+    mode_selected = .false.
+
+    argc = command_argument_count()
+    if (argc < 1) then
+       call print_usage()
+       stop 1
+    end if
+
+    do iarg = 1, argc
+       call get_command_argument(iarg, length=arg_length, status=arg_status)
+       if (arg_status /= 0 .or. arg_length < 1) then
+          write(UNIT_STDOUT,*) 'intSISMO: invalid command-line argument ', iarg
+          stop 1
+       end if
+       if (arg_length > len(argument)) then
+          write(UNIT_STDOUT,*) 'intSISMO: command-line argument is too long: ', &
+               arg_length, ' characters; maximum is ', len(argument)
+          stop 1
+       end if
+       call get_command_argument(iarg, argument, status=arg_status)
+       if (arg_status /= 0 .or. len_trim(argument) == 0) then
+          write(UNIT_STDOUT,*) 'intSISMO: invalid command-line argument ', iarg
+          stop 1
+       end if
+
+       select case (trim(argument))
+       case ('--help', '-h')
+          call print_usage()
+          stop
+       case ('--nonad')
+          if (mode_selected .and. .not. use_nonadiabatic) then
+             write(UNIT_STDOUT,*) &
+                  'intSISMO: conflicting physics options: choose adiabatic mode or --nonad.'
+             stop 1
+          end if
+          use_nonadiabatic = .true.
+          mode_selected = .true.
+       case ('--adiabatic', '--ad')
+          if (mode_selected .and. use_nonadiabatic) then
+             write(UNIT_STDOUT,*) &
+                  'intSISMO: conflicting physics options: choose adiabatic mode or --nonad.'
+             stop 1
+          end if
+          use_nonadiabatic = .false.
+          mode_selected = .true.
+       case default
+          if (len_trim(argument) >= 2 .and. argument(1:2) == '--') then
+             write(UNIT_STDOUT,*) 'intSISMO: unknown option: ', trim(argument)
+             call print_usage()
+             stop 1
+          end if
+          npos = npos + 1
+          if (npos > size(positional)) then
+             write(UNIT_STDOUT,*) 'intSISMO: too many positional arguments.'
+             call print_usage()
+             stop 1
+          end if
+          positional(npos) = argument
+       end select
+    end do
+
+    if (npos < 2) then
+       call print_usage()
+       stop 1
+    end if
+    if (len_trim(positional(2)) > len(grid_size)) then
+       write(UNIT_STDOUT,*) 'intSISMO: OSC grid-size argument is too long.'
+       stop 1
+    end if
+    if (npos >= 3 .and. len_trim(positional(3)) > len(grid_step_text)) then
+       write(UNIT_STDOUT,*) 'intSISMO: GRID_STEP argument is too long.'
+       stop 1
+    end if
+    if (npos >= 4 .and. len_trim(positional(4)) > len(grid_mode_text)) then
+       write(UNIT_STDOUT,*) 'intSISMO: GRID_MODE argument is too long.'
+       stop 1
+    end if
+
+    input_name = trim(positional(1))
+    grid_size = trim(positional(2))
+    if (npos >= 3) then
+       grid_step_text = trim(positional(3))
+       have_step = .true.
+    end if
+    if (npos >= 4) then
+       grid_mode_text = trim(positional(4))
+       have_mode = .true.
+    end if
+  end subroutine parse_command_line
+
   subroutine print_usage()
     implicit none
 
-    write(UNIT_STDOUT,*) 'Usage: intSISMO <input base/.madmod/.osc.mod/.mod> <OSC grid size> [GRID_STEP] [GRID_MODE]'
+    write(UNIT_STDOUT,*) &
+         'Usage: intSISMO [--nonad] <input base/.madmod/.osc.mod/.mod> ', &
+         '<OSC grid size> [GRID_STEP] [GRID_MODE]'
+    write(UNIT_STDOUT,*) '       Default: use only the adiabatic structural fields.'
+    write(UNIT_STDOUT,*) &
+         '       --nonad: require and validate a full legacy non-adiabatic input.'
+    write(UNIT_STDOUT,*) &
+         '       The generated .osc.mod and SISMO calculation remain adiabatic.'
+    write(UNIT_STDOUT,*) '       --adiabatic and --ad remain accepted for compatibility.'
     write(UNIT_STDOUT,*) '       GRID_STEP: integer in 1..', MAX_OSC_POINTS, &
          ' used as the output point-count multiple'
     write(UNIT_STDOUT,*) '       GRID_MODE: radial (default) or bv'
@@ -304,11 +394,11 @@ contains
   end function lowercase
 
   subroutine write_grid_step_metadata(filename, grid_step, requested_grid, &
-       target_grid, grid_mode, output_ok, output_owned)
+       target_grid, grid_mode, input_mode, output_ok, output_owned)
     implicit none
     character(len=*), intent(in) :: filename
     integer, intent(in) :: grid_step, requested_grid, target_grid
-    character(len=*), intent(in) :: grid_mode
+    character(len=*), intent(in) :: grid_mode, input_mode
     logical, intent(out) :: output_ok
     logical, intent(out) :: output_owned
 
@@ -335,13 +425,14 @@ contains
        return
     end if
     write(unit,'(A)',iostat=ios,iomsg=iomsg) &
-         '# GRID_STEP, requested_target, adjusted_target, GRID_MODE'
+         '# GRID_STEP, requested_target, adjusted_target, GRID_MODE, INPUT_MODE'
     if (ios /= 0) then
        call grid_metadata_failure(unit, filename, 'column description', ios, iomsg, cleanup_ok)
        output_owned = .not. cleanup_ok
        return
     end if
-    write(unit,*,iostat=ios,iomsg=iomsg) grid_step, requested_grid, target_grid, trim(grid_mode)
+    write(unit,'(I0,1X,I0,1X,I0,1X,A,1X,A)',iostat=ios,iomsg=iomsg) &
+         grid_step, requested_grid, target_grid, trim(grid_mode), trim(input_mode)
     if (ios /= 0) then
        call grid_metadata_failure(unit, filename, 'data record', ios, iomsg, cleanup_ok)
        output_owned = .not. cleanup_ok

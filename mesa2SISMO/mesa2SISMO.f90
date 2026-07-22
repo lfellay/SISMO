@@ -90,7 +90,7 @@ program mesa2SISMO
   call ensure_distinct_files(infile, outfile)
   call read_mesa_profile(infile, profile)
   call convert_to_mad(profile, adiabatic_only, model)
-  call write_madmod(outfile, model)
+  call write_madmod(outfile, model, adiabatic_only)
 
   write(*,'(a)') 'mesa2SISMO: wrote '//trim(outfile)
   write(*,'(a,i0,a,i0,a,i0,a,i0)') 'mesa2SISMO: points npi=', model%npi, &
@@ -100,7 +100,11 @@ program mesa2SISMO
   else
      write(*,'(a)') 'mesa2SISMO: atmosphere source=none in MESA profile; converter did not add one'
   end if
-  if (adiabatic_only) write(*,'(a)') 'mesa2SISMO: adiabatic mode: non-adiabatic fields are neutralized'
+  if (adiabatic_only) then
+     write(*,'(a)') 'mesa2SISMO: mode=adiabatic (default compact model)'
+  else
+     write(*,'(a)') 'mesa2SISMO: mode=nonadiabatic (--nonad full legacy model)'
+  end if
   write(*,'(a,1pe11.4,a,1pe11.4,a,1pe11.4)') 'mesa2SISMO: M=', model%mass/msun_default, &
        ' R=', model%radius/rsun_default, ' L=', model%lum/lsun_default
 
@@ -112,7 +116,7 @@ contains
 
     integer :: narg, i
     character(len=512) :: arg
-    logical :: have_out
+    logical :: have_out, mode_selected
 
     narg = command_argument_count()
     if (narg < 1) then
@@ -127,8 +131,9 @@ contains
     end if
 
     outfile = default_output_name(infile)
-    adiabatic_only = .false.
+    adiabatic_only = .true.
     have_out = .false.
+    mode_selected = .false.
 
     i = 2
     do while (i <= narg)
@@ -138,7 +143,17 @@ contains
           call usage()
           stop
        case ('--adiabatic', '--ad')
+          if (mode_selected .and. .not. adiabatic_only) then
+             call fatal('conflicting physics options: choose either adiabatic mode or --nonad.')
+          end if
           adiabatic_only = .true.
+          mode_selected = .true.
+       case ('--nonad')
+          if (mode_selected .and. adiabatic_only) then
+             call fatal('conflicting physics options: choose either adiabatic mode or --nonad.')
+          end if
+          adiabatic_only = .false.
+          mode_selected = .true.
        case default
           if (len_trim(arg) >= 2 .and. arg(1:2) == '--') then
              call fatal('unknown option '//trim(arg))
@@ -152,7 +167,10 @@ contains
   end subroutine parse_args
 
   subroutine usage()
-    write(*,'(a)') 'Usage: mesa2SISMO profile.data [output.madmod] [--adiabatic]'
+    write(*,'(a)') 'Usage: mesa2SISMO profile.data [output.madmod] [--nonad]'
+    write(*,'(a)') 'Default: write a compact adiabatic model.'
+    write(*,'(a)') '--nonad: require and write the full legacy non-adiabatic model.'
+    write(*,'(a)') '--adiabatic and --ad remain accepted for compatibility.'
     write(*,'(a)') 'The converter never adds atmosphere points; any atmosphere must already be present in the MESA input profile.'
   end subroutine usage
 
@@ -747,7 +765,8 @@ contains
     model%dm2 = 0d0
     model%eg = 0d0
     model%mix = 0d0
-    model%n2 = 0d0
+    ! Brunt-Vaisala frequency is an adiabatic grid-distribution aid and is
+    ! retained when MESA supplies it. It defaults safely to zero otherwise.
 
     model%tau = 0d0
     model%rr = 0d0
@@ -928,12 +947,14 @@ contains
     end do
   end subroutine merge_tiny_zones
 
-  subroutine write_madmod(filename, model)
+  subroutine write_madmod(filename, model, adiabatic_only)
     character(len=*), intent(in) :: filename
     type(mad_model), intent(in) :: model
+    logical, intent(in) :: adiabatic_only
 
     integer :: io, ios
     integer :: np1, np
+    character(len=8), parameter :: compact_magic = 'SISMOAD2'
 
     np = model%np
     np1 = model%npi + 1
@@ -944,27 +965,39 @@ contains
        stop 1
     end if
 
-    write(io) model%npi, model%npa, model%np, model%nz, model%step
-    write(io) model%mass, model%radius, model%teff, model%lum, model%age, &
-         model%logg, model%lgOverL, model%alphaConv, model%alphaOver, &
-         model%X0, model%Z0, model%diff, model%grav, model%arad, model%sigma
-    write(io) model%zones, model%r, model%m, model%rho, model%T, model%L, model%P, &
-         model%Cv, model%Gam1, model%Gam31, model%Prho, model%PT, model%Cp, &
-         model%Cprho, model%CpT, model%Q, model%Qrho, model%QT, model%kappa, &
-         model%krho, model%kT, model%en, model%X, model%Z, model%gradP, &
-         model%gradT, model%gradRad, model%gradAd, model%grad, model%GamC, &
-         model%AlphaC, model%dm1, model%dm2, model%yH1, model%yH2, model%yHe3, &
-         model%yHe4, model%yLi7, model%yC12, model%yC13, model%yN14, model%yN15, &
-         model%yO16, model%yO17, model%yO18, model%yNe20, model%yOthers, &
-         model%ZOthers, model%ZZOthers, model%MOthers, model%eg, model%mix, model%n2
-    if (model%npa > 0) then
-       write(io) model%tau(np1:np), model%rr(np1:np), model%mm(np1:np), &
-            model%Pg(np1:np), model%Cvg(np1:np), model%Gam1g(np1:np), &
-            model%Gam31g(np1:np), model%Prhog(np1:np), model%PTg(np1:np), &
-            model%Cpg(np1:np), model%Cprhog(np1:np), model%CpTg(np1:np), &
-            model%Qg(np1:np), model%Qrhog(np1:np), model%QTg(np1:np), &
-            model%accrad(np1:np), model%dTdTe(np1:np), model%dTdg(np1:np), &
-            model%PR(np1:np), model%gradPR(np1:np)
+    if (adiabatic_only) then
+       if (model%npa /= 0 .or. model%npi /= model%np) then
+          close(io, status='delete')
+          call fatal('internal error: compact adiabatic model contains atmosphere points.')
+       end if
+       write(io) compact_magic
+       write(io) model%npi, model%npa, model%np, model%nz, model%step
+       write(io) model%mass, model%radius, model%grav
+       write(io) model%zones, model%r, model%m, model%rho, model%P, &
+            model%Gam1, model%n2
+    else
+       write(io) model%npi, model%npa, model%np, model%nz, model%step
+       write(io) model%mass, model%radius, model%teff, model%lum, model%age, &
+            model%logg, model%lgOverL, model%alphaConv, model%alphaOver, &
+            model%X0, model%Z0, model%diff, model%grav, model%arad, model%sigma
+       write(io) model%zones, model%r, model%m, model%rho, model%T, model%L, model%P, &
+            model%Cv, model%Gam1, model%Gam31, model%Prho, model%PT, model%Cp, &
+            model%Cprho, model%CpT, model%Q, model%Qrho, model%QT, model%kappa, &
+            model%krho, model%kT, model%en, model%X, model%Z, model%gradP, &
+            model%gradT, model%gradRad, model%gradAd, model%grad, model%GamC, &
+            model%AlphaC, model%dm1, model%dm2, model%yH1, model%yH2, model%yHe3, &
+            model%yHe4, model%yLi7, model%yC12, model%yC13, model%yN14, model%yN15, &
+            model%yO16, model%yO17, model%yO18, model%yNe20, model%yOthers, &
+            model%ZOthers, model%ZZOthers, model%MOthers, model%eg, model%mix, model%n2
+       if (model%npa > 0) then
+          write(io) model%tau(np1:np), model%rr(np1:np), model%mm(np1:np), &
+               model%Pg(np1:np), model%Cvg(np1:np), model%Gam1g(np1:np), &
+               model%Gam31g(np1:np), model%Prhog(np1:np), model%PTg(np1:np), &
+               model%Cpg(np1:np), model%Cprhog(np1:np), model%CpTg(np1:np), &
+               model%Qg(np1:np), model%Qrhog(np1:np), model%QTg(np1:np), &
+               model%accrad(np1:np), model%dTdTe(np1:np), model%dTdg(np1:np), &
+               model%PR(np1:np), model%gradPR(np1:np)
+       end if
     end if
     close(io)
   end subroutine write_madmod

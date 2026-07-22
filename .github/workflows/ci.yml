@@ -36,5 +36,8 @@ jobs:
       - name: Build mesa2SISMO
         run: make -C mesa2SISMO clean all
 
+      - name: Test the adiabatic-first model pipeline
+        run: sh tests/test_model_pipeline.sh
+
       - name: Exercise the complete installer
         run: ./install.sh --bin-dir "$RUNNER_TEMP/sismo-bin"

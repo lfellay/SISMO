@@ -1,4 +1,8 @@
-! Example MESA src/run_star_extras.f90 additions for MAD/nonadiabatic output.
+! Optional MESA src/run_star_extras.f90 additions for the full legacy output
+! selected with mesa2SISMO --nonad.
+!
+! These hooks are not needed for the normal adiabatic SISMO workflow, which
+! uses profile_columns_sismo_adiabatic.list.
 !
 ! This file is not meant to replace an entire MESA work directory blindly.
 ! Copy the pieces below into your work directory's src/run_star_extras.f90,

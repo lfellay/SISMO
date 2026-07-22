@@ -319,11 +319,13 @@ contains
                'write_osc_model: ERROR - invalid enclosed mass at source point ', i, ': ', mass(i)
           return
        end if
-       if (i > 1 .and. mass(i) < mass(i-1)) then
-          write(UNIT_STDOUT,*) &
-               'write_osc_model: ERROR - enclosed mass decreases at source point ', i, &
-               ': ', mass(i-1), mass(i)
-          return
+       if (i > 1) then
+          if (mass(i) < mass(i-1)) then
+             write(UNIT_STDOUT,*) &
+                  'write_osc_model: ERROR - enclosed mass decreases at source point ', i, &
+                  ': ', mass(i-1), mass(i)
+             return
+          end if
        end if
        if (.not. ieee_is_finite(pressure(i)) .or. pressure(i) <= 0d0) then
           write(UNIT_STDOUT,*) &

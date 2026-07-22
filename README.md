@@ -11,8 +11,10 @@ as a mode-frequency seed.
 The repository contains:
 
 - `SISMO2.0/`: the current oscillation solver;
-- `mesa2SISMO/`: conversion from a MESA profile to the intermediate model;
-- `intSISMO/`: remeshing and conversion to the `.osc.mod` input format;
+- `mesa2SISMO/`: adiabatic-first conversion from a MESA profile to the
+  intermediate model;
+- `intSISMO/`: adiabatic remeshing and conversion to the `.osc.mod` input
+  format;
 - `install.sh`: a source installer for all three programs.
 
 ## Build and install
@@ -28,6 +30,19 @@ export PATH="$PWD/bin:$PATH"
 
 See [INSTALL.md](INSTALL.md) for the complete MESA-to-SISMO workflow and
 configuration reference.
+
+The normal model-conversion route needs only the adiabatic mechanical
+structure and has no physics flag:
+
+```sh
+mesa2SISMO profile.data model.madmod
+intSISMO model.madmod 25000 16 radial
+```
+
+`mesa2SISMO --nonad` explicitly requests the full legacy `.madmod` model,
+and `intSISMO --nonad` requires and validates that full input. The current
+remesher writes only its mechanical structure to `.osc.mod`; the additional
+non-adiabatic fields are not consumed by the SISMO solver.
 
 ## Run
 
@@ -54,6 +69,7 @@ Run the command-line tests with:
 
 ```sh
 make -C SISMO2.0 test
+sh tests/test_model_pipeline.sh
 ```
 
 Run the full numerical regression with the included benchmark model:

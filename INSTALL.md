@@ -11,7 +11,9 @@ the SISMO configuration, into one binary directory.
 - The standard `install` utility
 
 MESA is not required to compile SISMO. It is only needed to generate a stellar
-profile for `mesa2SISMO`.
+profile for `mesa2SISMO`. The supplied
+`mesa2SISMO/profile_columns_sismo_adiabatic.list` is the normal, compact
+profile definition.
 
 ## Install
 
@@ -161,12 +163,35 @@ cd /path/to/work
 
 ### 1. Convert a MESA profile
 
+`mesa2SISMO` is adiabatic by default. A normal MESA profile needs only a mass
+column (`mass` or `mass_grams`), `radius_cm`, `rho`, `pressure`, and
+`gamma1`. To generate such profiles, copy the supplied list into the MESA
+work directory and select it in the inlist:
+
 ```sh
-mesa2SISMO /path/to/profile.data model.madmod --adiabatic
+cp "$SISMO_ROOT/mesa2SISMO/profile_columns_sismo_adiabatic.list" \
+   /path/to/MESA-work/profile_columns_sismo_adiabatic.list
+```
+
+```fortran
+&star_job
+   profile_columns_file = 'profile_columns_sismo_adiabatic.list'
+/
+```
+
+Convert the profile without a physics flag:
+
+```sh
+mesa2SISMO /path/to/profile.data model.madmod
 ```
 
 If the output name is omitted, `mesa2SISMO` derives it from the input name.
 For example, `profile.data` becomes `profile.madmod`.
+The default output is the compact, versioned adiabatic `.madmod` format.
+`mesa2SISMO` and `intSISMO` must come from the same updated installation:
+older `intSISMO` binaries do not recognize the compact `SISMOAD2` header.
+`--adiabatic` and `--ad` remain accepted for compatibility with existing
+scripts, but are no longer needed.
 
 ### 2. Create the SISMO input model
 
@@ -177,13 +202,15 @@ intSISMO model.madmod 25000 16 radial
 The arguments are:
 
 ```text
-intSISMO MODEL GRID_SIZE [GRID_STEP] [GRID_MODE]
+intSISMO MODEL GRID_SIZE [GRID_STEP] [GRID_MODE] [--nonad]
 ```
 
 - `GRID_SIZE` is the requested number of output points and must be between 8
   and 2,000,000.
 - `GRID_STEP` defaults to `1` and has the same upper safety limit.
 - `GRID_MODE` defaults to `radial`; `bv` is also available.
+- `--nonad` is optional and is only for a full legacy `.madmod`
+  input. Without it, `intSISMO` uses only the adiabatic structural fields.
 
 The example requests 25,000 points with a step of 16. `intSISMO` selects the
 nearest compatible size, 24,992 points. It creates:
@@ -204,6 +231,27 @@ previous pair and retains any backup that cannot be restored. A
 that an earlier conversion ended abruptly. Confirm that no converter is
 running before treating the lock as stale, and inspect any `.bak` file before
 removing it.
+
+### Optional full non-adiabatic model
+
+The non-adiabatic route is explicit:
+
+```sh
+mesa2SISMO /path/to/profile.data model.madmod --nonad
+intSISMO model.madmod 25000 16 radial --nonad
+```
+
+`mesa2SISMO --nonad` requires the thermodynamic, opacity, luminosity,
+nuclear, convection, composition, and custom EOS quantities used by the full
+legacy `.madmod` format. Use
+`mesa2SISMO/profile_columns_mad_nonad.list` and the optional
+`mesa2SISMO/run_star_extras_mad_eos.f90` hooks described in
+`mesa2SISMO/README.md`.
+
+`intSISMO --nonad` requires and validates a full legacy input and retains
+its atmosphere and zone structure during remeshing. Only the mechanical
+structure is written to `.osc.mod`; the additional non-adiabatic fields are
+not consumed by the current SISMO solver.
 
 ### 3. Run SISMO 2.0
 
@@ -242,7 +290,8 @@ results/model.comparison
 
 ## Generated files
 
-- `mesa2SISMO` writes a `.madmod` stellar model.
+- `mesa2SISMO` writes a compact adiabatic `.madmod` by default, or the full
+  legacy format with `--nonad`.
 - `intSISMO` writes an `.osc.mod` model and its `.grid.d` sidecar.
 - `sismo` writes the mode spectrum to `.sismo` and comparison information to
   `.comparison`.
