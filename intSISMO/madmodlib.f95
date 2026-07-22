@@ -9,8 +9,11 @@
 !===============================================================================
 
 module madmodlib
+  use, intrinsic :: iso_fortran_env, only : int64
   implicit none
   private
+
+  integer, parameter :: MAX_MODEL_POINTS = 2000000
 
   public :: tMadmod, readmadmod, DeleteMadmod
 
@@ -48,27 +51,24 @@ contains
     character(len=*), intent(in) :: fn
     type(tMadmod),    intent(out) :: star
 
-    integer :: io, np, npi, npa, nz, np1, ios
+    integer :: io, np, npi, npa, nz, np1, ios, alloc_stat
+    integer(int64) :: file_size, expected_size, integer_bytes, real_bytes
+    character(len=512) :: iomsg, alloc_msg
 
     open(newunit=io, file=fn, action='read', status='old', &
-         form='unformatted', access='stream', convert='little_endian', iostat=ios)
+         form='unformatted', access='stream', convert='little_endian', &
+         iostat=ios, iomsg=iomsg)
     if (ios /= 0) then
-       write(*,*) 'readmadmod: ERROR - cannot open: ', trim(fn), ' iostat=', ios
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - cannot open ', trim(fn), &
+            ' (iostat=', ios, '): ', trim(iomsg)
        stop 1
     end if
 
-    read(io, iostat=ios) star%npi, star%npa, star%np, star%nz, star%step
+    read(io, iostat=ios, iomsg=iomsg) star%npi, star%npa, star%np, star%nz, star%step
     if (ios /= 0) then
-       write(*,*) 'readmadmod: ERROR - header read failed in: ', trim(fn), ' iostat=', ios
-       stop 1
-    end if
-
-    read(io, iostat=ios) star%mass, star%radius, star%Teff, &
-         star%Lum, star%age, star%logg, star%LgOverL, star%alphaConv, &
-         star%alphaOver, star%X0, star%Z0, star%diff, star%Grav, star%aRad, &
-         star%sigmaSB
-    if (ios /= 0) then
-       write(*,*) 'readmadmod: ERROR - global scalar read failed in: ', trim(fn), ' iostat=', ios
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - header read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
        stop 1
     end if
 
@@ -77,6 +77,55 @@ contains
     np  = star%np
     nz  = star%nz
 
+    if (npi < 1 .or. npa < 0 .or. np < 1 .or. nz < 1 .or. nz > np .or. &
+         int(npi, int64) + int(npa, int64) /= int(np, int64)) then
+       write(*,'(A,A)') 'readmadmod: ERROR - invalid dimensions in ', trim(fn)
+       write(*,'(A,I0,A,I0,A,I0,A,I0)') 'readmadmod: npi=', npi, &
+            ' npa=', npa, ' np=', np, ' nz=', nz
+       write(*,'(A)') 'readmadmod: expected npi >= 1, npa >= 0, np = npi + npa, and 1 <= nz <= np.'
+       close(io)
+       stop 1
+    end if
+    if (np > MAX_MODEL_POINTS) then
+       write(*,'(A,A,A,I0,A,I0)') 'readmadmod: ERROR - model in ', trim(fn), &
+            ' has ', np, ' points; safety limit is ', MAX_MODEL_POINTS
+       close(io)
+       stop 1
+    end if
+
+    inquire(unit=io, size=file_size, iostat=ios, iomsg=iomsg)
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - cannot determine size of ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       stop 1
+    end if
+    integer_bytes = int(storage_size(star%npi)/8, int64)
+    real_bytes = int(storage_size(star%mass)/8, int64)
+    expected_size = 5_int64*integer_bytes + 15_int64*real_bytes + &
+         3_int64*int(nz,int64)*integer_bytes + &
+         52_int64*int(np,int64)*real_bytes + &
+         20_int64*int(npa,int64)*real_bytes
+    if (file_size < expected_size) then
+       write(*,'(A,A)') 'readmadmod: ERROR - file is too short for its declared dimensions: ', trim(fn)
+       write(*,'(A,I0,A,I0)') 'readmadmod: file bytes=', file_size, &
+            ' minimum expected bytes=', expected_size
+       close(io)
+       stop 1
+    end if
+
+    read(io, iostat=ios, iomsg=iomsg) star%mass, star%radius, star%Teff, &
+         star%Lum, star%age, star%logg, star%LgOverL, star%alphaConv, &
+         star%alphaOver, star%X0, star%Z0, star%diff, star%Grav, star%aRad, &
+         star%sigmaSB
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - global scalar read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       stop 1
+    end if
+
+    alloc_msg = ''
     allocate( &
          star%zones(3,nz), &
          star%r(np),       star%m(np),       star%rho(np),     star%T(np),   &
@@ -91,9 +140,17 @@ contains
          star%yLi7(np),    star%yC12(np),     star%yC13(np),    star%yN14(np), &
          star%yN15(np),    star%yO16(np),     star%yO17(np),    star%yO18(np), &
          star%yNe20(np),   star%yOthers(np),  star%ZOthers(np), star%ZZOthers(np), &
-         star%MOthers(np), star%eg(np),       star%mix(np),     star%n2(np))
+         star%MOthers(np), star%eg(np),       star%mix(np),     star%n2(np), &
+         stat=alloc_stat, errmsg=alloc_msg)
+    if (alloc_stat /= 0) then
+       write(*,'(A,A,A,A)') 'readmadmod: ERROR - allocation failed for ', &
+            trim(fn), ': ', trim(alloc_msg)
+       close(io)
+       call DeleteMadmod(star)
+       stop 1
+    end if
 
-    read(io, iostat=ios) &
+    read(io, iostat=ios, iomsg=iomsg) &
          star%zones, star%r, star%m, star%rho, star%T, star%L, star%P, &
          star%Cv, star%Gam1, star%Gam31, star%Prho, star%PT, star%Cp, star%Cprho, &
          star%CpT, star%Q, star%Qrho, star%QT, star%kappa, star%krho, star%kT, star%en, &
@@ -103,16 +160,26 @@ contains
          star%yO17, star%yO18, star%yNe20, star%yOthers, star%ZOthers, star%ZZOthers, &
          star%MOthers, star%eg, star%mix, star%n2
     if (ios /= 0) then
-       write(*,*) 'readmadmod: ERROR - array data read failed in: ', trim(fn), ' iostat=', ios
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - array data read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       call DeleteMadmod(star)
        stop 1
     end if
 
     if (npa == 0) then
-       close(io)
+       close(io, iostat=ios, iomsg=iomsg)
+       if (ios /= 0) then
+          write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - close failed for ', &
+               trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+          call DeleteMadmod(star)
+          stop 1
+       end if
        return
     end if
 
     np1 = npi + 1
+    alloc_msg = ''
     allocate( &
          star%tau(np1:np),    star%rr(np1:np),    star%mm(np1:np),  &
          star%Pg(np1:np),     star%Cvg(np1:np),   star%Gam1g(np1:np), &
@@ -120,19 +187,36 @@ contains
          star%Cpg(np1:np),    star%Cprhog(np1:np),star%CpTg(np1:np), &
          star%Qg(np1:np),     star%Qrhog(np1:np), star%QTg(np1:np), &
          star%accrad(np1:np), star%dTdTe(np1:np), star%dTdg(np1:np), &
-         star%PR(np1:np),     star%gradPR(np1:np))
+         star%PR(np1:np),     star%gradPR(np1:np), &
+         stat=alloc_stat, errmsg=alloc_msg)
+    if (alloc_stat /= 0) then
+       write(*,'(A,A,A,A)') 'readmadmod: ERROR - atmosphere allocation failed for ', &
+            trim(fn), ': ', trim(alloc_msg)
+       close(io)
+       call DeleteMadmod(star)
+       stop 1
+    end if
 
-    read(io, iostat=ios) &
+    read(io, iostat=ios, iomsg=iomsg) &
          star%tau, star%rr, star%mm, star%Pg, star%Cvg, star%Gam1g, &
          star%Gam31g, star%Prhog, star%PTg, star%Cpg, star%Cprhog, star%CpTg, &
          star%Qg, star%Qrhog, star%QTg, star%accrad, star%dTdTe, star%dTdg, &
          star%PR, star%gradPR
     if (ios /= 0) then
-       write(*,*) 'readmadmod: ERROR - atmosphere data read failed in: ', trim(fn), ' iostat=', ios
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - atmosphere data read failed in ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       close(io)
+       call DeleteMadmod(star)
        stop 1
     end if
 
-    close(io)
+    close(io, iostat=ios, iomsg=iomsg)
+    if (ios /= 0) then
+       write(*,'(A,A,A,I0,A,A)') 'readmadmod: ERROR - close failed for ', &
+            trim(fn), ' (iostat=', ios, '): ', trim(iomsg)
+       call DeleteMadmod(star)
+       stop 1
+    end if
   end subroutine readmadmod
 
 

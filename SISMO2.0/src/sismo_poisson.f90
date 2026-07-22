@@ -10,6 +10,7 @@ module sismo_poisson
   type, public :: poisson_degree_cache
      integer :: n = 0
      integer :: l = -1
+     integer :: match_index = 0
      logical :: prepared = .false.
      complex(dp), allocatable :: homogeneous(:,:)
      ! (x, s2, s4, c33, c21, c42) at left/mid/right for each cell.  Only the
@@ -20,7 +21,7 @@ module sismo_poisson
   end type poisson_degree_cache
 
   ! Release configuration: the split Poisson is solved by RK4 shooting with the
-  ! vacuum surface match (with an automatic Green-function integral fallback when
+  ! vacuum photospheric match (with an automatic Green-function integral fallback when
   ! the homogeneous match degenerates).  For l=1 the amplitude can instead be
   ! closed by Takata's first integral (momentum conservation) -- the release
   ! default for dipole runs (takata_closure = true in sismo.conf).
@@ -39,12 +40,14 @@ contains
     type(poisson_degree_cache), intent(inout) :: cache
 
     complex(dp), allocatable :: zero_mechanics(:,:)
-    integer :: i, n, start_i
+    integer :: i, m, n, start_i
 
     n = model%n
+    m = photospheric_match_index(model)
     cache%prepared = .false.
     cache%n = n
     cache%l = l
+    cache%match_index = m
     cache%bc_homogeneous = czero
     if (allocated(cache%homogeneous)) deallocate(cache%homogeneous)
     if (allocated(cache%rk4_coeff)) deallocate(cache%rk4_coeff)
@@ -68,8 +71,11 @@ contains
        call rk4_poisson_step(model, l, zero_mechanics, i, cache%homogeneous(:,i), .false., &
             cache%homogeneous(:,i+1))
     end do
-    cache%bc_homogeneous = cmplx(real(l+1, dp), 0.0_dp, kind=dp)*cache%homogeneous(1,n) &
-         + cache%homogeneous(2,n)
+    ! Cache the homogeneous residual at exactly the same physical raccord point
+    ! used later for the forced (particular) residual.  OSC binary models do not
+    ! carry nrac, so photospheric_match_index deliberately returns n for them.
+    cache%bc_homogeneous = cmplx(real(l+1, dp), 0.0_dp, kind=dp)*cache%homogeneous(1,m) &
+         + cache%homogeneous(2,m)
     allocate(cache%rk4_coeff(6,3,n-1))
     cache%rk4_coeff = 0.0_dp
     do i = start_i, n-1
@@ -108,7 +114,8 @@ contains
 
     n = model%n
     if (n <= 1) return
-    if (.not. cache%prepared .or. cache%n /= n .or. cache%l /= l) &
+    if (.not. cache%prepared .or. cache%n /= n .or. cache%l /= l .or. &
+         cache%match_index /= photospheric_match_index(model)) &
          error stop 'SISMO: invalid Poisson degree cache'
 
     call pack_mechanical_shape(model, l, sol, ymech)
@@ -126,16 +133,15 @@ contains
     end do
 
     ! Match the vacuum exterior condition at the photosphere (interior-atmosphere
-    ! raccord) rather than the top of the extended atmosphere: the homogeneous
-    ! amplitude this fixes scales phi everywhere, so distorting it by integrating
-    ! the growing (~x^l) solution through the thick low-density atmosphere corrupts
-    ! phi back in the envelope.  The vacuum match belongs where the star ends.
-    m = n
+    ! raccord) rather than the top of an extended atmosphere.  Both residuals
+    ! must use this same grid point; mixing a photospheric particular residual
+    ! with a top-of-model homogeneous residual changes the global amplitude.
+    m = cache%match_index
     bc_particular = cmplx(model%rho(m)/max(tiny, model%qx3(m)), 0.0_dp, kind=dp)*ymech(1,m) &
          + cmplx(real(l+1, dp), 0.0_dp, kind=dp)*particular(1,m) + particular(2,m)
     bc_homogeneous = cache%bc_homogeneous
     if (abs(bc_homogeneous) <= tiny) then
-       call solve_poisson_integral_correction(model, l, sol, sources)
+       call solve_poisson_integral_correction(model, l, sol, sources, m)
        return
     end if
     amplitude = -bc_particular/bc_homogeneous
@@ -199,6 +205,18 @@ contains
     end do
     sources%horizontal(n) = sources%horizontal(n) + sol%phi(n)
   end subroutine solve_poisson_shooting_correction
+
+  integer function photospheric_match_index(model) result(m)
+    type(stellar_model), intent(in) :: model
+
+    ! The text-model reader stores the raccord metadata as a Fortran array
+    ! index.  Treat it as usable only when it denotes a non-central model
+    ! point.  A .osc.mod file has nrac=0 because that compact format contains
+    ! no atmosphere metadata; retaining n as the fallback therefore preserves
+    ! the established OSC boundary condition exactly.
+    m = model%n
+    if (model%nrac >= 2 .and. model%nrac <= model%n) m = model%nrac
+  end function photospheric_match_index
 
   complex(dp) function cone() result(value)
     value = cmplx(1.0_dp, 0.0_dp, kind=dp)
@@ -371,16 +389,20 @@ contains
     end if
   end function regularization_scale
 
-  subroutine solve_poisson_integral_correction(model, l, sol, sources)
+  subroutine solve_poisson_integral_correction(model, l, sol, sources, match_index)
     type(stellar_model), intent(in) :: model
     integer, intent(in) :: l
     type(mode_solution), intent(inout) :: sol
     type(source_terms), intent(inout) :: sources
+    integer, intent(in) :: match_index
 
-    integer :: n, i
+    integer :: n, i, m
+    real(dp) :: sd, sp, s2
     complex(dp), allocatable :: rho_source(:), phi(:), dphi(:)
+    complex(dp), allocatable :: ymech(:,:), raw_phi(:,:)
 
     n = model%n
+    m = max(1, min(n, match_index))
 
     allocate(rho_source(n), phi(n), dphi(n))
     rho_source = czero
@@ -399,7 +421,31 @@ contains
        rho_source(n) = rho_source(n-1)
     end if
 
-    call solve_poisson_integral(model, l, rho_source, phi, dphi)
+    call solve_poisson_integral(model, l, rho_source, phi, dphi, match_index)
+    if (m < n) then
+       ! The Green solution fixes the boundary at the photospheric match point.
+       ! Beyond it, retain the same forced atmospheric ODE continuation as the
+       ! normal shooting path instead of substituting a vacuum-only source.
+       call pack_mechanical_shape(model, l, sol, ymech)
+       allocate(raw_phi(2,n))
+       raw_phi = czero
+       sd = regularization_scale(model%x(m), max(0, l-1))
+       sp = regularization_scale(model%x(m), max(0, l))
+       s2 = max(tiny, model%qx3(m))
+       raw_phi(1,m) = phi(m)/cmplx(max(tiny, sp*s2), 0.0_dp, kind=dp)
+       raw_phi(2,m) = dphi(m)/cmplx(max(tiny, sd*s2), 0.0_dp, kind=dp)
+       do i = m, n-1
+          call rk4_poisson_step(model, l, ymech, i, raw_phi(:,i), .true., raw_phi(:,i+1))
+       end do
+       do i = m+1, n
+          sd = regularization_scale(model%x(i), max(0, l-1))
+          sp = regularization_scale(model%x(i), max(0, l))
+          s2 = max(tiny, model%qx3(i))
+          phi(i) = cmplx(sp*s2, 0.0_dp, kind=dp)*raw_phi(1,i)
+          dphi(i) = cmplx(sd*s2, 0.0_dp, kind=dp)*raw_phi(2,i)
+       end do
+       deallocate(ymech, raw_phi)
+    end if
     sol%phi = phi
     sol%theta = dphi
 
@@ -410,38 +456,42 @@ contains
     if (n >= 2) sources%horizontal(n) = sources%horizontal(n) + phi(n)
   end subroutine solve_poisson_integral_correction
 
-  subroutine solve_poisson_integral(model, l, rho_source, phi, dphi)
+  subroutine solve_poisson_integral(model, l, rho_source, phi, dphi, match_index)
     type(stellar_model), intent(in) :: model
     integer, intent(in) :: l
     complex(dp), intent(in) :: rho_source(:)
     complex(dp), intent(out) :: phi(:), dphi(:)
+    integer, intent(in) :: match_index
 
     complex(dp), allocatable :: inner(:), outer(:)
     real(dp) :: x, dx, factor
-    integer :: n, i
+    integer :: n, i, m
 
     n = model%n
+    m = max(1, min(n, match_index))
     allocate(inner(n), outer(n))
     inner = czero
     outer = czero
+    phi = czero
+    dphi = czero
 
     ! Green-function solution of
     !   (1/x^2) d/dx(x^2 dphi/dx) - l(l+1) phi/x^2 = rho_source,
     ! with the regular center solution and the vacuum exterior solution.
-    do i = 2, n
+    do i = 2, m
        dx = max(tiny, model%x(i) - model%x(i-1))
        inner(i) = inner(i-1) + cmplx(0.5_dp*dx, 0.0_dp, kind=dp) &
             * (inner_kernel(model%x(i-1), l, rho_source(i-1)) + inner_kernel(model%x(i), l, rho_source(i)))
     end do
 
-    do i = n-1, 1, -1
+    do i = m-1, 1, -1
        dx = max(tiny, model%x(i+1) - model%x(i))
        outer(i) = outer(i+1) + cmplx(0.5_dp*dx, 0.0_dp, kind=dp) &
             * (outer_kernel(model%x(i), l, rho_source(i)) + outer_kernel(model%x(i+1), l, rho_source(i+1)))
     end do
 
     factor = -1.0_dp/real(2*l + 1, dp)
-    do i = 1, n
+    do i = 1, m
        x = model%x(i)
        if (x <= tiny) then
           if (l == 0) then
@@ -488,7 +538,8 @@ contains
     complex(dp), intent(in) :: rho_source
 
     if (x <= tiny) then
-       if (l <= 1) then
+       ! The limiting x**(1-l) kernel is zero for l=0 and finite for l=1.
+       if (l == 1) then
           value = rho_source
        else
           value = czero

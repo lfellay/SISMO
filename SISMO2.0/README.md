@@ -8,8 +8,8 @@ the complete conversion workflow.
 
 Adiabatic stellar oscillation code: complete labeled spectra (g, f, p modes)
 with a SPLIT (inhomogeneous) Poisson treatment of self-gravity on a scalar
-second-order Cowling core.  Sturm-scan mode location (no seeding, no
-asymptotics), OpenMP-parallel, full model grid.
+second-order Cowling core. Sturm-scan mode location (asymptotics size only the
+scan window and never seed individual modes), OpenMP-parallel, full model grid.
 
     make
     export OMP_NUM_THREADS=<cores>
@@ -60,10 +60,12 @@ each degree. SISMO stops with a diagnostic instead of silently skipping modes
 if the requested sampling is too coarse. Set `use_poisson = false` for a pure
 Cowling spectrum. Full-grid eigenfunctions are omitted by default; set
 `write_eigenfunctions = true` to write one mechanical `.eig` file per mode.
-Potential-related columns in these optional files are currently zero.
+With split refinement enabled, these files include the selected mechanical and
+gravitational-potential state.
 
 See doc/RELEASE.md for the validated configuration, method summary, accuracy
-(max 0.21% vs OSC over every l=1,2 mode of the 1M5 benchmark) and timing
-(about 1.9 s wall / 28.0 s CPU for 216 modes on a 25k-point model at 18 threads).
-Design note: doc/second_order_cowling.md.  Development log: doc/core2_status.md.
-SISMO 1 (the block-solver lineage and all legacy machinery) lives in ../SISMO.
+(max 0.20% vs OSC over every l=1,2 mode of the 1M5 benchmark) and timing
+(about 1.7 s wall / 28.0 s CPU for 216 modes on a 25k-point model at 18 threads).
+Design note: doc/second_order_cowling.md. The historical implementation log is
+kept in doc/core2_status.md; use this README and doc/RELEASE.md for the current
+interface and validated behavior.

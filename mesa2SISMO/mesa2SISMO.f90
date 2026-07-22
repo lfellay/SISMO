@@ -87,6 +87,7 @@ program mesa2SISMO
   type(mad_model) :: model
 
   call parse_args(infile, outfile, adiabatic_only)
+  call ensure_distinct_files(infile, outfile)
   call read_mesa_profile(infile, profile)
   call convert_to_mad(profile, adiabatic_only, model)
   call write_madmod(outfile, model)
@@ -168,6 +169,57 @@ contains
        outfile = trim(outfile)//'.madmod'
     end if
   end function default_output_name
+
+  subroutine ensure_distinct_files(input_name, output_name)
+    character(len=*), intent(in) :: input_name, output_name
+
+    integer :: cmdstat, exitstat
+    logical :: output_exists
+    character(len=512) :: cmdmsg
+    character(len=:), allocatable :: command
+
+    if (trim(input_name) == trim(output_name)) then
+       call fatal('input and output must be different files: '//trim(input_name))
+    end if
+
+    inquire(file=trim(output_name), exist=output_exists)
+    if (.not. output_exists) return
+
+    ! /bin/test -ef compares the underlying file identities, so this also
+    ! catches relative/absolute aliases, symbolic links, and hard links.
+    ! shell_quote prevents either user-supplied path from being interpreted.
+    command = '/bin/test '//shell_quote(trim(input_name))//' -ef '// &
+         shell_quote(trim(output_name))
+    cmdmsg = ''
+    call execute_command_line(command, wait=.true., exitstat=exitstat, &
+         cmdstat=cmdstat, cmdmsg=cmdmsg)
+    if (cmdstat /= 0) then
+       call fatal('could not verify that input and output differ: '//trim(cmdmsg))
+    end if
+    if (exitstat == 0) then
+       call fatal('input and output refer to the same file: '//trim(input_name))
+    else if (exitstat /= 1) then
+       call fatal('could not compare input and output paths safely.')
+    end if
+  end subroutine ensure_distinct_files
+
+  function shell_quote(text) result(quoted)
+    character(len=*), intent(in) :: text
+    character(len=:), allocatable :: quoted
+
+    integer :: i
+
+    quoted = achar(39)
+    do i = 1, len_trim(text)
+       if (text(i:i) == achar(39)) then
+          ! End the single-quoted string, quote one apostrophe, and reopen it.
+          quoted = quoted//achar(39)//achar(34)//achar(39)//achar(34)//achar(39)
+       else
+          quoted = quoted//text(i:i)
+       end if
+    end do
+    quoted = quoted//achar(39)
+  end function shell_quote
 
   subroutine read_mesa_profile(filename, p)
     character(len=*), intent(in) :: filename
@@ -252,6 +304,11 @@ contains
     real(dp), allocatable :: conv_metric(:)
 
     call map_columns(p, c, adiabatic_only)
+    call validate_positive_column(p, c%rho)
+    call validate_positive_column(p, c%pressure)
+    call validate_positive_column(p, c%gamma1)
+    if (c%temperature > 0) call validate_positive_column(p, c%temperature)
+
     n_mesa = p%nrow
     if (n_mesa < 16) call fatal('MESA profile is too small for MAD/intSISMO.')
 
@@ -531,6 +588,34 @@ contains
     end if
     c%alpha_mlt = find_col(p, 'alpha_mlt')
   end subroutine map_columns
+
+  subroutine validate_positive_column(p, column)
+    type(mesa_profile), intent(in) :: p
+    integer, intent(in) :: column
+
+    integer :: row
+    real(dp) :: value
+
+    if (column < 1 .or. column > p%ncol) then
+       call fatal('internal error while validating a mechanical profile column.')
+    end if
+
+    do row = 1, p%nrow
+       value = p%data(column,row)
+       if (.not. ieee_is_finite(value)) then
+          write(*,'(a,i0,a,i0,a,a,a,1pe16.8)') &
+               'mesa2SISMO: invalid non-finite mechanical value at profile row ', &
+               row, ', column ', column, ' (', trim(p%cname(column)), '): ', value
+          stop 1
+       end if
+       if (value <= 0d0) then
+          write(*,'(a,i0,a,i0,a,a,a,1pe16.8)') &
+               'mesa2SISMO: non-positive mechanical value at profile row ', &
+               row, ', column ', column, ' (', trim(p%cname(column)), '): ', value
+          stop 1
+       end if
+    end do
+  end subroutine validate_positive_column
 
   function get_mass(p, c, row, msun) result(val)
     type(mesa_profile), intent(in) :: p

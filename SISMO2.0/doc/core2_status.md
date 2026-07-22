@@ -1,5 +1,9 @@
 # SISMO 2.0 core — implementation status (2026-07-04)
 
+> Historical development log. It records intermediate flags, paths, timings,
+> and solver states that are not the current interface. For current usage and
+> validated release results, see `../README.md` and `RELEASE.md`.
+
 ## What is implemented (src/sismo_core2.f90, flag --core2)
 
 1. Second-order scalar reduction of the syst05 MECHANICAL pair (rows 1,2 of

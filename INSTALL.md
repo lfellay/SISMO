@@ -45,6 +45,13 @@ FC=/path/to/gfortran ./install.sh
 
 The destination must be writable. Existing executables with the same names
 are replaced only after all three builds and command-line checks succeed.
+Replacement is protected by an installation lock and rollback transaction:
+all destination files are prepared on the destination filesystem first, and
+an error or a caught `HUP`, `INT`, or `TERM` signal restores the previous
+complete tool set. An uncatchable `SIGKILL`, host crash, or power loss can
+leave `.sismo-install.lock` or `.sismo-commit.*` state in the destination;
+after confirming that no installer is active, remove that stale state and run
+the installer again.
 `sismo.conf.default` is refreshed on every installation. `sismo.conf` is
 created only when it does not already exist, so reinstalling SISMO preserves
 your settings.
@@ -173,8 +180,9 @@ The arguments are:
 intSISMO MODEL GRID_SIZE [GRID_STEP] [GRID_MODE]
 ```
 
-- `GRID_SIZE` is the requested number of output points and must be at least 8.
-- `GRID_STEP` defaults to `1`.
+- `GRID_SIZE` is the requested number of output points and must be between 8
+  and 2,000,000.
+- `GRID_STEP` defaults to `1` and has the same upper safety limit.
 - `GRID_MODE` defaults to `radial`; `bv` is also available.
 
 The example requests 25,000 points with a step of 16. `intSISMO` selects the
@@ -185,8 +193,17 @@ model.osc.mod
 model.grid.d
 ```
 
-Keep these two files together with the same basename. SISMO reads
-`model.grid.d` to recover the grid-step information.
+Keep these two files together with the same basename. The sidecar records the
+intSISMO grid-conversion settings for provenance; SISMO solves every point of
+the imported `.osc.mod` grid.
+
+`intSISMO` prepares both files before replacing an existing regular-file pair.
+On a reported publication failure, the converter attempts to restore the
+previous pair and retains any backup that cannot be restored. A
+`model.sismo-output.lock` file means that another conversion is committing, or
+that an earlier conversion ended abruptly. Confirm that no converter is
+running before treating the lock as stale, and inspect any `.bak` file before
+removing it.
 
 ### 3. Run SISMO 2.0
 
@@ -213,10 +230,10 @@ OMP_NUM_THREADS=8 sismo model.osc.mod results/model /path/to/run.conf
 ```
 
 SISMO reports when `scan_points` is too small to isolate every crossing. Set
-`write_eigenfunctions = true` only when you need one full-grid mechanical
-`.eig` file per mode; potential-related columns in these optional files are
-zero. The parent directory of the output base must already exist. The command
-creates:
+`write_eigenfunctions = true` only when you need one full-grid `.eig` file per
+mode. With split refinement enabled, it includes the selected mechanical and
+gravitational-potential state. The parent directory of the output base must
+already exist. The command creates:
 
 ```text
 results/model.sismo
@@ -282,8 +299,9 @@ You can also pass the configuration as the third argument or set
 
 ### SISMO does not recover the intended grid step
 
-Keep the `.grid.d` file beside the corresponding `.osc.mod` file and preserve
-their common basename.
+Keep the `.grid.d` provenance file beside the corresponding `.osc.mod` file
+and preserve their common basename. SISMO itself does not use it to stride or
+subsample the imported grid.
 
 ### Build artifacts came from another compiler or computer
 

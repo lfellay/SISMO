@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use SISMO in scientific work, please cite the software and the associated method article."
+type: software
+title: "SISMO: Split Inhomogeneous Solver for Modelling Oscillations"
+version: 2.0.0
+date-released: 2026-07-14
+repository-code: "https://github.com/lfellay/SISMO"
+authors:
+  - family-names: Fellay
+    given-names: L.
+  - family-names: Dupret
+    given-names: M.-A.
+

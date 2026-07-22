@@ -83,8 +83,8 @@ source terms without modifying the operator.}
 % aims
 {We describe a complete reformulation of the split-Poisson method in which the
 mechanical problem is reduced to a single scalar second-order equation, modes
-are located and labelled by a Sturm-type determinant-sign scan with no
-asymptotic input, and the well-known inaccuracy of split schemes for dipole
+are located and labelled by a Sturm-type determinant-sign scan without
+mode-by-mode asymptotic seeding, and the well-known inaccuracy of split schemes for dipole
 modes is removed by a parameter-free closure based on Takata's first
 integral.}
 % methods
@@ -105,12 +105,12 @@ reference code OSC, run on the identical model, to a median of
 $2\times10^{-5}$ relative, with a maximum difference of $2.1\times10^{-3}$
 over all 198 modes, including the f~mode; agreement with GYRE is at the level
 set by the model re-interpolation ($\simeq2\times10^{-3}$).  The complete
-two-degree spectrum is obtained in $6.6\,$s on 18 threads, about eleven times
+two-degree spectrum is obtained in $1.7\,$s on 18 threads, about forty times
 faster than the coupled reference on the same model.}
 % conclusions
 {The gravitational potential can be treated fully inhomogeneously at the
 accuracy of coupled solvers, provided (i) modes are located on the true
-resonance structure of the operator rather than on asymptotic estimates, and
+resonance structure of the operator rather than by mode-by-mode asymptotic estimates, and
 (ii) the dipole potential is closed by momentum conservation.  The
 architecture is ready for the introduction of rotational source terms.}
 
@@ -155,7 +155,11 @@ We work with the scaled variables of the OSC adiabatic system~5, which absorb th
   S_5=\Gamma_1,\quad
   S_6=A_{\rm osc},
 \end{equation}
-where $m(x)$ is the fractional mass inside $x$.  Two combinations occur repeatedly: the local dimensionless gravity is $g=S_2x$, and the squared Brunt--V\"ais\"al\"a (buoyancy) frequency is $N^2=S_2S_6x^2$.  The four dependent variables are the scaled radial displacement, horizontal displacement, potential perturbation, and potential gradient:
+where $m(x)$ is the fractional mass inside $x$.  Two combinations occur repeatedly: the local dimensionless gravity is $g=S_2x$, and, with the OSC sign convention for $A_{\rm osc}$, the squared Brunt--V\"ais\"al\"a (buoyancy) frequency is
+\begin{equation}
+  N^2=-S_2S_6x^2 .
+\end{equation}
+Thus a stably stratified g-mode cavity has $S_6<0$.  The four dependent variables are the scaled radial displacement, horizontal displacement, potential perturbation, and potential gradient:
 \begin{align}
   y_1 &= \frac{\xi_r}{x^{\max(0,\ell-1)}}, &
   y_2 &= \frac{\sigma^2\,\xi_h}{x^{\max(0,\ell-1)}S_2}, \nonumber\\
@@ -219,12 +223,12 @@ with $c_{42}=xS_4/(S_3S_5)$.  These are the scaled form of $\nabla^2\Phi'=4\pi G
   + A \begin{pmatrix}y_3^{\rm h}\\[2pt] y_4^{\rm h}\end{pmatrix},
   \label{eq:phABC}
 \end{equation}
-where $A$ is a constant classically set by the vacuum condition at the surface (the interior potential must match a decaying exterior solution),
+where $A$ is a constant classically set by the vacuum condition at the photospheric interior--atmosphere raccord (the interior potential must match a decaying exterior solution),
 \begin{equation}
-  y_4+(\ell+1)\,y_3=-\frac{S_4}{S_2}\,y_1 \qquad (x=x_{\rm s}).
+  y_4+(\ell+1)\,y_3=-\frac{S_4}{S_2}\,y_1 \qquad (x=x_{\rm ph}).
   \label{eq:surfBC}
 \end{equation}
-\\~\\For $\ell\ge2$ this closure works well.  For the dipole it can become problematic.  The homogeneous solution grows outward as $x^{\ell}$, through the envelope and the model atmosphere; the amplitude $A$ is fixed by a condition imposed at the very top of that growth; and the resulting potential is then used deep in the interior, where, for $\ell=1$ specifically,  it has a strong effect on the frequency.  A small inaccuracy at the surface is thus propagated globally and amplified.  \autoref{subsec_dipole_closure} replaces this closure for $\ell=1$ by a condition that involves the whole star instead of one point.
+\\~\\For $\ell\ge2$ this closure works well.  In a model containing an explicit atmosphere, SISMO applies it at the recorded photospheric raccord, not at the last atmospheric point; models without raccord metadata use their final point.  The homogeneous solution grows outward as $x^{\ell}$, so its residual and the particular-solution residual must be evaluated at the same point.  The dipole remains more sensitive because the resulting amplitude affects the potential throughout the star.  A small local mismatch can therefore be propagated globally.  \autoref{subsec_dipole_closure} replaces this pointwise closure for $\ell=1$ by a condition that involves the whole star.
 
 %=============================================================================
 \section{The scalar second-order core}
@@ -379,7 +383,7 @@ One correction is needed. The matrix contains $1/\bar a_{12}$, and the position 
 \end{equation}
 A Lamb-frequency pole leaves $\mathcal{S}$ unchanged, whereas a genuine eigenvalue changes it.
 
-In practice, SISMO first chooses a frequency interval broad enough to contain the requested radial orders. The asymptotic g-mode relation is used only to set these outer limits, not to guess individual mode frequencies. The interval is sampled uniformly in period because high-order g modes are approximately equally spaced in period. The sampling is chosen so that adjacent trial points normally contain at most one mode. The code brackets an interval when $\mathcal{S}$ changes by an odd number; in the intended one-mode-per-interval case, this change is one. Bisection then refines the enclosed eigenfrequency to a relative precision of $10^{-12}$.
+In practice, SISMO first chooses a frequency interval broad enough to contain the requested radial orders. The asymptotic g-mode relation is used only to set these outer limits, not to guess individual mode frequencies.  Its buoyancy integral uses $N/x=\sqrt{\max(0,-S_2S_6)}$, so convectively unstable layers do not contribute. The interval is sampled uniformly in period because high-order g modes are approximately equally spaced in period. The sampling is chosen so that adjacent trial points normally contain at most one mode. The code brackets an interval when $\mathcal{S}$ changes by an odd number; in the intended one-mode-per-interval case, this change is one. Bisection then refines the enclosed eigenfrequency to a relative precision of $10^{-12}$.
 
 A few inverse-iteration steps then recover the eigenfunction associated with each frequency. The result of the scan is an ordered set of Cowling frequencies and eigenfunctions, including the g-mode sequence and any f and low-order p modes inside the interval. Each matrix factorisation is independent and costs $\mathcal{O}(N)$ operations, so the scan and the bisections can be distributed directly across threads.
 
@@ -566,7 +570,7 @@ The fundamental mode requires no dedicated search strategy. In the present
 formulation, it is identified as the next change in the corrected Sturm count
 above the g-mode sequence and is subsequently refined using the same
 fixed-point iteration as all other modes. Its frequency agrees with the OSC
-value to within $7\times10^{-4}$. This represents an improvement over the response-based scans used in the
+value to within $1.4\times10^{-3}$. This represents an improvement over the response-based scans used in the
 first implementation of the code, which were unable to identify the
 fundamental mode reliably because a probe constructed from a g-mode-like
 eigenfunction produces little resonant response at the f-mode frequency.
@@ -587,34 +591,35 @@ the three error sources of the method:
   the $\lesssim2\times10^{-3}$ remnants of the $\simeq5\%$ Cowling shifts,
   i.e.\ the part of the potential not captured by the least-squares first
   integral with the converged (but not exact) mechanical source.
-\item \emph{Fixed-point truncation} is negligible: modes converge to the raw
-  Newton criterion of $10^{-8}$, and the best-iterate rule bounds the effect
-  of any residual limit cycle below the discretisation error.
+\item \emph{Fixed-point truncation} is monitored explicitly. With the release
+  tolerance, modes that satisfy the raw Newton criterion stop at an effective
+  relative correction of $10^{-7}$; a
+  bounded residual cycle instead returns its smallest-correction iterate.
+  The direct OSC comparison below includes both cases.
 \end{itemize}
 
 %=============================================================================
 \subsection{Computational cost}
 \label{sec:performance}
-\begin{table} \caption{Wall-clock and CPU times for the complete benchmark ($\ell=1,2$, $|n|=1\dots100$) on one 18-core workstation. GYRE runs on its own $1131$-point input model with internal remeshing and is listed for context; OSC, the first-generation code, and the present code all process the identical $24\,992$-point model.} \label{tab:timing} \centering \begin{tabular}{lccc} \hline\hline Code & wall & CPU & modes \\ \hline GYRE 8.1 (own grid) & $9.4$\,s & $71$\,s & 200 \\ OSC (scang, {\tt oscQI}=2) & $72.5$\,s & $1095$\,s & 202 \\ First-generation split code & $72.7$\,s & $905$\,s & 204 \\ Present code & $6.6$\,s & $106$\,s & 216 \\ \hline\hline \end{tabular} \end{table}
+\begin{table} \caption{Wall-clock and CPU times for the complete benchmark ($\ell=1,2$, $|n|=1\dots100$) on one 18-core workstation. GYRE runs on its own $1131$-point input model with internal remeshing and is listed for context; OSC, the first-generation code, and the present code all process the identical $24\,992$-point model.} \label{tab:timing} \centering \begin{tabular}{lccc} \hline\hline Code & wall & CPU & modes \\ \hline GYRE 8.1 (own grid) & $9.4$\,s & $71$\,s & 200 \\ OSC (scang, {\tt oscQI}=2) & $72.5$\,s & $1095$\,s & 202 \\ First-generation split code & $72.7$\,s & $905$\,s & 204 \\ Present code & $1.7$\,s & $28$\,s & 216 \\ \hline\hline \end{tabular} \end{table}
 The timings are summarised in Table~\ref{tab:timing}. Relative to the coupled
 reference calculation performed on the same stellar model, the approximately
-order-of-magnitude reduction in wall-clock time results from three main
+fortyfold reduction in wall-clock time results from three main
 properties of the numerical formulation.
 \\~\\First, each evaluation of the mechanical operator requires only the assembly
 and factorisation of a scalar tridiagonal matrix. Both operations scale as
 $\mathcal{O}(N)$ and have a small numerical prefactor, in contrast to the
 factorisation of the $4\times4$ block-banded system used in the fully coupled
-formulation. This low cost makes the direct Sturm scan practical: approximately
-$10^4$ factorisations of the complete 24,992-point matrix are performed in
-about two seconds.
+formulation. This low cost makes the direct Sturm scan practical: the complete
+scan, bisection, and refinement workflow finishes in about $1.7$\,s.
 \\~\\Second, the Sturm scan eliminates the need for mode-dependent initial
 frequency estimates and associated seeding procedures. The matrix
 factorisations at the trial frequencies, the bisections of the identified
 eigenvalue intervals, and the subsequent mode refinements are mutually
 independent. These operations can therefore be distributed directly across
 threads with little communication overhead. For the complete benchmark, the
-wall-clock time decreases from approximately $104$,s in serial execution to
-$6.6$,s when using 18 threads. Third, the calculation is performed on the original model grid throughout.
+wall-clock time decreases from $23.6$\,s in serial execution to $1.7$\,s
+when using 18 threads. Third, the calculation is performed on the original model grid throughout.
 No multigrid procedure, mode-dependent mesh refinement, or intermediate
 remeshing is required. In addition to reducing the computational overhead,
 this avoids introducing interpolation errors associated with transferring
@@ -632,7 +637,7 @@ gravitational potential reproduces coupled adiabatic oscillation
 calculations at the level of the discretisation error -- median
 $2\times10^{-5}$, maximum $2\times10^{-3}$ relative against OSC on the
 identical model over the complete $\ell=1,2$, $|n|\le100$ spectrum including
-the fundamental -- at roughly one tenth of the computational cost.  The three
+the fundamental -- at roughly one fortieth of the wall-clock cost.  The three
 ingredients that make this possible are:
 
 \begin{enumerate}

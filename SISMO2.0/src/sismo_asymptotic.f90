@@ -40,16 +40,30 @@ contains
 
     imax = model%n
     if (model%nrac > 2) imax = min(imax, model%nrac)
-    use_imported_aosc = allocated(model%aosc) .and. any(abs(model%aosc(1:imax)) > tiny)
+    use_imported_aosc = .false.
+    ! Fortran does not require short-circuit evaluation of .and.; keep the
+    ! array reference inside the allocation guard so partially constructed
+    ! stellar_model values remain safe.
+    if (allocated(model%aosc)) then
+       if (size(model%aosc) >= imax) then
+          ! Any non-zero imported coefficient means that OSC supplied Aosc.
+          ! Its sign controls cavity membership below; a model containing
+          ! only convectively unstable (positive) values must not silently
+          ! fall back to a reconstructed, potentially artificial cavity.
+          use_imported_aosc = any(abs(model%aosc(1:imax)) > tiny)
+       end if
+    end if
 
     do i = 2, imax
        dx = model%x(i) - model%x(i-1)
        if (dx <= tiny) cycle
 
        if (use_imported_aosc) then
-          kl = sqrt(max(0.0_dp, model%qx3(i-1)*abs(model%aosc(i-1))))
-          kr = sqrt(max(0.0_dp, model%qx3(i)*abs(model%aosc(i))))
-          if (kl <= tiny .or. kr <= tiny) cycle
+          ! OSC defines Aosc with N^2 = -S2*Aosc*x^2.  Hence N/x is
+          ! sqrt(max(0,-S2*Aosc)); positive Aosc is convectively unstable and
+          ! must not be folded into the g-mode cavity with abs(Aosc).
+          kl = sqrt(max(0.0_dp, -model%qx3(i-1)*model%aosc(i-1)))
+          kr = sqrt(max(0.0_dp, -model%qx3(i)*model%aosc(i)))
           integral = integral + 0.5_dp*(kl+kr)*dx
        else
           xmid = 0.5_dp*(model%x(i) + model%x(i-1))

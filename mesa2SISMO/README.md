@@ -10,14 +10,14 @@ luminosity, nuclear, and convection quantities used by the nonadiabatic code.
 Build the converter:
 
 ```sh
-cd /Users/lfellay/dox/SISMO/mesa2SISMO
+cd /path/to/SISMO/mesa2SISMO
 make
 ```
 
 Convert a MESA profile:
 
 ```sh
-./mesa2SISMO ../1M5/profile_1M5_638Myr.data ../1M5/MESA-1M5-638Myr.madmod
+./mesa2SISMO /path/to/MESA-work/LOGS/profile1.data /path/to/models/model.madmod
 ```
 
 Use `--adiabatic` (or `--ad`) when the output is only meant for
@@ -43,8 +43,8 @@ points above `npi`, when present in the MESA profile, are class 3.
 Then run `intSISMO` to remesh the model and write the SISMO/OSC input files:
 
 ```sh
-cd /Users/lfellay/dox/SISMO/1M5
-../bin/intSISMO MESA-1M5-638Myr.madmod 25000 16 radial
+cd /path/to/models
+/path/to/SISMO/bin/intSISMO model.madmod 25000 16 radial
 ```
 
 This creates `MESA-1M5-638Myr.osc.mod` and the companion
@@ -61,7 +61,7 @@ rather than inherited with `include ''`.
 Install it in a MESA work directory:
 
 ```sh
-cp /Users/lfellay/dox/SISMO/mesa2SISMO/profile_columns_mad_nonad.list /path/to/mesa/work/profile_columns_mad_nonad.list
+cp /path/to/SISMO/mesa2SISMO/profile_columns_mad_nonad.list /path/to/MESA-work/profile_columns_mad_nonad.list
 ```
 
 Then set the profile column file in the MESA inlist:
@@ -78,7 +78,7 @@ directory where `./rn` is executed.  An absolute path can also be used:
 
 ```fortran
 &star_job
-   profile_columns_file = '/Users/lfellay/dox/SISMO/mesa2SISMO/profile_columns_mad_nonad.list'
+   profile_columns_file = '/path/to/SISMO/mesa2SISMO/profile_columns_mad_nonad.list'
    warn_run_star_extras = .false.
 /
 ```
@@ -110,7 +110,7 @@ points down to the requested outer optical depth:
 /
 ```
 
-In MESA 26.04.1, `atm_build_*` affects pulse-data atmospheres, not necessarily
+In MESA r26.4.1, `atm_build_*` affects pulse-data atmospheres, not necessarily
 the normal `profile*.data` mesh. Since `mesa2SISMO` does not create an
 atmosphere, any atmosphere used by a MAD nonadiabatic calculation must be exported by MESA with all
 the nonadiabatic profile columns.  The OSC/pulse atmosphere is useful for
@@ -134,18 +134,21 @@ MESA's `how_many_extra_profile_columns` and
 `data_for_extra_profile_columns` hooks append such columns to the profile
 output.  They do not need to be listed in `profile_columns_mad_nonad.list`.
 
-An example implementation is provided in `run_star_extras_mad_eos.f90`.  To
-use it in a MESA work directory:
+An example implementation is provided in `run_star_extras_mad_eos.f90`.
+Inspect `src/run_star_extras.f90` before changing it. If it already contains
+custom logic, do not replace it; merge the SISMO hooks and routines as
+described below. If it is the unmodified MESA template and you intentionally
+want to replace it, preserve a backup first:
 
 ```sh
-cp /Users/lfellay/dox/SISMO/mesa2SISMO/run_star_extras_mad_eos.f90 /path/to/mesa/work/src/run_star_extras.f90
-cd /path/to/mesa/work
+cd /path/to/MESA-work
+cp -p src/run_star_extras.f90 src/run_star_extras.f90.before_sismo
+cp /path/to/SISMO/mesa2SISMO/run_star_extras_mad_eos.f90 src/run_star_extras.f90
 ./mk
 ./rn
 ```
 
-If `src/run_star_extras.f90` already contains custom logic, do not overwrite
-it.  Instead, merge the MAD EOS pieces:
+To merge the MAD EOS pieces into an existing custom file:
 
 1. Add these procedure pointers in `extras_controls`:
 
@@ -164,7 +167,7 @@ After running MESA, check the header of `LOGS/profile*.data`; the columns
 `Cprho`, `CpT`, `Qrho`, and `QT` should appear after the standard profile
 columns.
 
-For MESA 26.04.1, AGSS09 opacity/table controls use these names:
+For MESA r26.4.1, AGSS09 opacity/table controls use these names:
 
 ```fortran
 &star_job
@@ -178,8 +181,28 @@ For MESA 26.04.1, AGSS09 opacity/table controls use these names:
 /
 ```
 
-To request an initial hydrogen fraction, set `initial_y = 1 - initial_x -
-initial_z` in `&controls`; MESA 26.04.1 does not have an `initial_x` control.
+For a newly created pre-main-sequence or initial model, select the desired
+hydrogen fraction \(X\) indirectly through the helium fraction:
+
+```fortran
+&controls
+   initial_z = 0.02d0
+   initial_y = 0.28d0   ! X is then 1 - initial_y - initial_z
+/
+```
+
+MESA r26.4.1 has no `initial_x` control. `initial_y` does not alter the
+composition when loading a saved model or a ZAMS model; use the appropriate
+MESA composition-change/relaxation controls for those workflows.
+
+Do not add `set_uniform_initial_composition = .true.` by itself. If uniform
+composition is deliberately required, first choose \(X\), \(Y\), and \(Z\)
+for the active nuclear network, then explicitly provide the compatible
+`initial_h1`, `initial_h2`, `initial_he3`, and `initial_he4` fractions in
+`&star_job`, together with `initial_z` in `&controls` and the desired
+`initial_zfracs`. Verify that all isotope fractions are non-negative and sum
+to one before running MESA. For ordinary pre-main-sequence creation,
+`initial_y`, `initial_z`, and `initial_zfracs` are the safer workflow.
 
 For opacity, the standard profile list provides face derivatives:
 

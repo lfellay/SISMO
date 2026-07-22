@@ -1,0 +1,45 @@
+.DS_Store
+**/.DS_Store
+
+# Fortran build products (kept path-specific because scientific models may
+# legitimately use the .mod suffix).
+/bin/
+/SISMO2.0/sismo
+/SISMO2.0/*.mod
+/SISMO2.0/src/*.o
+/intSISMO/intSISMO
+/intSISMO/*.o
+/intSISMO/*.mod
+/mesa2SISMO/mesa2SISMO
+/mesa2SISMO/*.o
+/mesa2SISMO/*.mod
+**/*.dSYM/
+
+# Generated solver output.
+*.sismo
+!SISMO2.0/doc/release_reference_1M5.sismo
+*.comparison
+*.eig
+
+# Generated article files; keep the TeX source, class, bibliography style,
+# figures, and bibliography database.
+/SISMO2.0/article/*.aux
+/SISMO2.0/article/*.bbl
+/SISMO2.0/article/*.blg
+/SISMO2.0/article/*.fdb_latexmk
+/SISMO2.0/article/*.fls
+/SISMO2.0/article/*.llt
+/SISMO2.0/article/*.log
+/SISMO2.0/article/*.out
+/SISMO2.0/article/*.pdf
+/SISMO2.0/doc/*.v1-backup
+
+# Large converter diagnostics and bundled development models.
+/intSISMO/Modout-atm-5500*
+/intSISMO/interp_*.pdf
+/intSISMO/interp_diagnostics.csv
+
+# Local scratch directories.
+/tmp/
+*.swp
+*~

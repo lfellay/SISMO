@@ -336,7 +336,11 @@ contains
     sF = 0.0_dp
     rhs(1:n) = 0.0_dp
     do i = i0, n-1
-       sF(i) = -cache%face_a13(i)/faces%a12_face(i)*0.5_dp*(y3(i) + y3(i+1))
+       ! Use the same guarded denominator as the assembled operator.  Written
+       ! this way the face_hphi factor cancels analytically away from an exact
+       ! Lamb crossing, while the guard remains effective at the crossing.
+       sF(i) = -cache%face_a13(i)*cache%face_hphi(i)/faces%den(i) &
+            *0.5_dp*(y3(i) + y3(i+1))
     end do
 
     do i = i0, n-1
@@ -398,6 +402,16 @@ contains
        x(i) = (work(i) - T%up(i)*x(i+1))/piv(i)
     end do
   end subroutine tri_solve
+
+  ! Keep identity rows homogeneous in every inverse solve.  In particular, a
+  ! random inverse-iteration seed must not leak into inactive centre nodes.
+  subroutine zero_dirichlet_rhs(cache, b)
+    type(core2_degree_cache), intent(in) :: cache
+    real(dp), intent(inout) :: b(:)
+
+    if (cache%i0 > 1) b(1:cache%i0-1) = 0.0_dp
+    if (cache%l >= 2) b(cache%i0) = 0.0_dp
+  end subroutine zero_dirichlet_rhs
 
   ! Allocation-free Sturm count using workspace owned by one OpenMP thread.
   integer function sturm_count_with_workspace(cache, w2, Tl, facesl, pivl) result(indicator)
@@ -538,6 +552,7 @@ contains
     end do
     do it = 1, 3
        b = y1
+       call zero_dirichlet_rhs(cache, b)
        call tri_solve(T, piv, b, y1, solve_work)
        nrm = maxval(abs(y1))
        if (nrm > tiny) y1 = y1/nrm
@@ -576,12 +591,10 @@ contains
        end if
        src = 0.0_dp
        if (present(y3)) then
-          if (present(faces)) then
-             src = -cache%face_a13(i)/faces%a12_face(i)*0.5_dp*(y3(i) + y3(i+1))
-          else
-             src = -cache%face_a13(i)/(0.5_dp*(a12(i)+a12(i+1))) &
-                  *0.5_dp*(y3(i) + y3(i+1))
-          end if
+          ! As in core2_build_rhs, retain face_hphi explicitly so that den is
+          ! the sole (regularized) division at a Lamb crossing.
+          src = -cache%face_a13(i)*cache%face_hphi(i)/den &
+               *0.5_dp*(y3(i) + y3(i+1))
        end if
        y2f(i) = (y1(i+1) - cache%face_exp(i)*y1(i))/den + src
     end do
@@ -603,14 +616,15 @@ contains
 
   ! Fill a mode_solution (the Poisson solver's interface) from (y1, y2):
   ! sol%xi_r = x^{l-1} y1 ; sol%xi_h = y2 x^{l-1} qx3 / sigma^2  (pack convention)
-  subroutine core2_fill_solution(model, l, w2, y1, y2, sol)
+  subroutine core2_fill_solution(model, l, w2, y1, y2, sol, y3)
     type(stellar_model), intent(in) :: model
     integer, intent(in) :: l
     real(dp), intent(in) :: w2, y1(:), y2(:)
     type(mode_solution), intent(inout) :: sol
+    real(dp), intent(in), optional :: y3(:)
 
-    real(dp) :: sd, s2
-    integer :: i
+    real(dp) :: sd, sp, s2, s3, y3i, dx
+    integer :: i, ilo, ihi
 
     if (sol%n /= model%n) call allocate_solution(sol, model%n)
     sol%l = l
@@ -618,13 +632,37 @@ contains
     do i = 1, model%n
        sd = max(model%x(i), 0.0_dp)**max(0, l-1)
        if (max(0, l-1) == 0) sd = 1.0_dp
+       sp = max(model%x(i), 0.0_dp)**max(0, l)
+       if (max(0, l) == 0) sp = 1.0_dp
        s2 = max(tiny, model%qx3(i))
+       s3 = max(tiny, model%pressure(i))/max(tiny, model%rho(i))
+       y3i = 0.0_dp
+       if (present(y3)) y3i = y3(i)
        sol%xi_r(i) = cmplx(sd*y1(i), 0.0_dp, kind=dp)
        sol%xi_h(i) = cmplx(y2(i)*sd*s2/max(tiny, w2), 0.0_dp, kind=dp)
-       sol%dpp(i) = cmplx(0.0_dp, 0.0_dp, kind=dp)
-       sol%phi(i) = cmplx(0.0_dp, 0.0_dp, kind=dp)
+       ! Horizontal momentum gives P'/P = x^l*S2/S3*(y2-y3).
+       sol%dpp(i) = cmplx(sp*s2/s3*(y2(i) - y3i), 0.0_dp, kind=dp)
+       if (present(y3)) then
+          ! y3 is the regularized potential phi/(x^l q/x^3); mode_solution
+          ! stores the physical potential used by the eigenfunction writer.
+          sol%phi(i) = cmplx(sp*s2*y3(i), 0.0_dp, kind=dp)
+       else
+          sol%phi(i) = cmplx(0.0_dp, 0.0_dp, kind=dp)
+       end if
        sol%theta(i) = cmplx(0.0_dp, 0.0_dp, kind=dp)
     end do
+    if (present(y3) .and. model%n >= 2) then
+       ! Store the physical d(Phi')/dx corresponding to the physical potential
+       ! above.  The split iteration carries only y3, so recover its derivative
+       ! on the same full grid for eigenfunction output.
+       do i = 1, model%n
+          ilo = max(1, i-1)
+          ihi = min(model%n, i+1)
+          dx = model%x(ihi) - model%x(ilo)
+          if (dx > tiny) sol%theta(i) = (sol%phi(ihi) - sol%phi(ilo)) &
+               /cmplx(dx, 0.0_dp, kind=dp)
+       end do
+    end if
   end subroutine core2_fill_solution
 
   ! ------------------------------------------------- split (inhomogeneous) solve
@@ -632,7 +670,7 @@ contains
   !   phi <- Poisson(mechanics) ; solve T(w2) w = rhs(phi) ;
   !   dw2 = <y,z>/<y,t>, z = T^{-1}(rhs - T y), t = T^{-1} T' y
   subroutine core2_split_refine(model, l, mechanical_cache, w2_seed, config, poisson_cache, &
-       w2_out, y1, niter, conv)
+       w2_out, y1, y3_out, niter, conv)
     type(stellar_model), intent(in) :: model
     integer, intent(in) :: l
     type(core2_degree_cache), intent(in) :: mechanical_cache
@@ -641,6 +679,7 @@ contains
     type(poisson_degree_cache), intent(in) :: poisson_cache
     real(dp), intent(out) :: w2_out
     real(dp), allocatable, intent(inout) :: y1(:)
+    real(dp), allocatable, intent(out) :: y3_out(:)
     integer, intent(out) :: niter
     logical, intent(out) :: conv
 
@@ -659,7 +698,8 @@ contains
     type(mode_solution) :: sol
     type(source_terms) :: src
     real(dp), allocatable :: piv(:), rhs(:), z(:), tvec(:), y2(:), y3(:), y3new(:), b(:), solve_work(:)
-    real(dp) :: w2, num, den, dw2, nrm, relch, eps_fd, pchange, pchange_prev, qrate, perr
+    real(dp) :: w2, num, den, dw2, dw2_step, nrm, relch, eps_fd
+    real(dp) :: pchange, pchange_prev, qrate, perr
     real(dp) :: relax, ptol, clamp
     integer, parameter :: l1_stagnation_min_iter = 30
     integer, parameter :: l1_stable_best_required = 20
@@ -667,7 +707,7 @@ contains
     integer, parameter :: l1_alternating_clamps_required = 10
     real(dp), parameter :: l1_small_correction_limit = 1.0d-2
     real(dp) :: w2_best, best_res, w2_candidate, best_w2_marker, previous_dw2
-    real(dp), allocatable :: y1_best(:)
+    real(dp), allocatable :: y1_best(:), y3_best(:)
     integer :: it, inner, n_inner, i, n, nneg, info
     integer :: stable_best_passes, unclamped_passes, clamp_alternations
     logical :: inner_ok, best_valid, clamp_active, previous_clamped
@@ -679,9 +719,10 @@ contains
     conv = .false.
     niter = 0
     y3 = 0.0_dp
-    allocate(y1_best(n))
+    allocate(y1_best(n), y3_best(n))
     w2_best = w2_seed
     y1_best = y1
+    y3_best = y3
     best_res = huge(1.0_dp)
     best_valid = .false.
     best_w2_marker = w2_seed
@@ -726,6 +767,7 @@ contains
              b(i) = b(i) - (T%lo(i)*y1(i-1) + T%di(i)*y1(i) + T%up(i)*y1(i+1))
           end do
           b(n) = b(n) - (T%lo(n)*y1(n-1) + T%di(n)*y1(n))
+          call zero_dirichlet_rhs(mechanical_cache, b)
           call tri_solve(T, piv, b, z, solve_work)
           ! sign-align: the eigenvector sign is arbitrary; if the update lands
           ! with negative overlap the normalized iterate flips sign every pass
@@ -758,9 +800,13 @@ contains
           b(i) = b(i) - (T%lo(i)*y1(i-1) + T%di(i)*y1(i) + T%up(i)*y1(i+1))
        end do
        b(n) = b(n) - (T%lo(n)*y1(n-1) + T%di(n)*y1(n))
+       call zero_dirichlet_rhs(mechanical_cache, b)
        call tri_solve(T, piv, b, z, solve_work)
        ! t = T^{-1} T' y1  (finite-difference T')
-       eps_fd = max(1.0d-7, 1.0d-7*w2)
+       ! Scale the perturbation to max(1,|w2|), retaining the established
+       ! low-frequency step while adding a multiple-ULP floor so that
+       ! w2 + eps_fd is always numerically distinct from w2.
+       eps_fd = max(1.0d-7*max(1.0_dp, abs(w2)), 32.0_dp*spacing(w2))
        call core2_assemble(mechanical_cache, w2 + eps_fd, Tp, facesp)
        b(1) = (Tp%di(1)-T%di(1))*y1(1) + (Tp%up(1)-T%up(1))*y1(2)
        do i = 2, n-1
@@ -769,6 +815,7 @@ contains
        end do
        b(n) = (Tp%lo(n)-T%lo(n))*y1(n-1) + (Tp%di(n)-T%di(n))*y1(n)
        b = b/eps_fd
+       call zero_dirichlet_rhs(mechanical_cache, b)
        call tri_solve(T, piv, b, tvec, solve_work)
        num = dot_product(y1, z)
        den = dot_product(y1, tvec)
@@ -792,11 +839,19 @@ contains
        previous_dw2 = dw2
        previous_clamped = clamp_active
        if (best_valid) stable_best_passes = stable_best_passes + 1
+       dw2_step = dw2
+       if (abs(dw2_step) > clamp*w2) dw2_step = sign(clamp*w2, dw2_step)
+       b = y1 + z - dw2_step*tvec
+       if (dot_product(y1, b) < 0.0_dp) b = -b
+       nrm = maxval(abs(b))
+       if (nrm > tiny) b = b/nrm
+       w2_candidate = max(tiny, w2 + dw2_step)
        ! remember the best-visited iterate: the (phi,shape,lambda) loop can enter
        ! a small limit cycle instead of converging; the point of smallest raw
-       ! Newton step is the closest pass to the resonance.
+       ! Newton step is the closest pass to the resonance.  Snapshot the whole
+       ! updated split state so frequency, mechanics, and frozen potential all
+       ! come from the same algorithmic iterate.
        if (it >= 3 .and. pchange < 1.0d-1 .and. relch < best_res) then
-          w2_candidate = w2 + dw2*min(1.0_dp, clamp*w2/max(abs(dw2), tiny))
           if (.not. best_valid .or. &
                abs(w2_candidate - best_w2_marker)/max(w2_seed, tiny) > &
                max(tiny, 0.1_dp*config%tol)) then
@@ -806,15 +861,26 @@ contains
           best_valid = .true.
           best_res = relch
           w2_best = w2_candidate
-          y1_best = y1
+          y1_best = b
+          if (config%write_eigenfunctions) then
+             ! The Newton candidate (b,w2_candidate) is one step newer than
+             ! y3.  Refresh its potential before snapshotting so an early
+             ! stagnation exit cannot return a mixed-iterate eigenfunction.
+             call core2_y2_nodes(mechanical_cache, w2_candidate, b, y3=y3, y2=y2)
+             call core2_fill_solution(model, l, w2_candidate, b, y2, sol)
+             call zero_sources(src)
+             call solve_poisson_correction(model, l, sol, src, poisson_cache)
+             do i = 1, n
+                y3_best(i) = real(sol%phi(i), dp) &
+                     /(max(tiny, max(model%x(i), 0.0_dp)**max(0,l)) &
+                     *max(tiny, model%qx3(i)))
+             end do
+          else
+             y3_best = y3
+          end if
        end if
-       if (abs(dw2) > clamp*w2) dw2 = sign(clamp*w2, dw2)
-       b = y1 + z - dw2*tvec
-       if (dot_product(y1, b) < 0.0_dp) b = -b
        y1 = b
-       nrm = maxval(abs(y1))
-       if (nrm > tiny) y1 = y1/nrm
-       w2 = max(tiny, w2 + dw2)
+       w2 = w2_candidate
        ! converge on the RAW (unclamped) Newton step vanishing, with phi converged
        if (it >= 3 .and. relch < max(1.0d-7, config%tol) .and. inner_ok) then
           conv = .true.
@@ -834,10 +900,28 @@ contains
     end do
     if (conv) then
        w2_out = w2
+       allocate(y3_out(n))
+       y3_out = y3
     else
        ! unconverged (limit cycle / cap): return the best pass, not the last
        w2_out = w2_best
        y1 = y1_best
+       allocate(y3_out(n))
+       y3_out = y3_best
+    end if
+    if (config%write_eigenfunctions) then
+       ! One final Poisson refresh makes the optional exported potential belong
+       ! to the returned mechanical shape even when refinement stopped on the
+       ! bounded best iterate rather than on the last outer pass.
+       call core2_y2_nodes(mechanical_cache, w2_out, y1, y3=y3_out, y2=y2)
+       call core2_fill_solution(model, l, w2_out, y1, y2, sol)
+       call zero_sources(src)
+       call solve_poisson_correction(model, l, sol, src, poisson_cache)
+       do i = 1, n
+          y3_out(i) = real(sol%phi(i), dp) &
+               /(max(tiny, max(model%x(i), 0.0_dp)**max(0,l)) &
+               *max(tiny, model%qx3(i)))
+       end do
     end if
   end subroutine core2_split_refine
 
@@ -851,7 +935,7 @@ contains
     type(mode_result), allocatable :: results(:)
     type(poisson_degree_cache) :: poisson_cache
     type(core2_degree_cache) :: mechanical_cache
-    real(dp), allocatable :: eigs(:), y1(:), y2(:)
+    real(dp), allocatable :: eigs(:), y1(:), y2(:), y3(:)
     real(dp) :: om_lo, om_hi, w2, w2_out, om_asym_top, om_asym_bot
     integer :: l, k, neig, nres, unit, nsel, niter, i, nstart
     logical :: conv
@@ -862,7 +946,10 @@ contains
     do l = max(1, l_min), l_max
        call prepare_core2_cache(model, l, mechanical_cache)
        ! frequency window from the asymptotic relation (range only, never seeds)
-       om_asym_top = initial_asymptotic_g_frequency(model, l, max(1, g_min), config%eps_g)
+       ! Always start the ordered scan at global radial order one.  Starting
+       ! the window at g_min makes the first eigenvalue found look like n=-1
+       ! and therefore mislabels every result when g_min > 1.
+       om_asym_top = initial_asymptotic_g_frequency(model, l, 1, config%eps_g)
        om_asym_bot = initial_asymptotic_g_frequency(model, l, g_max + 3, config%eps_g)
        om_hi = 3.0_dp*om_asym_top
        om_lo = 0.75_dp*om_asym_bot
@@ -891,25 +978,27 @@ contains
        end do
        if (config%use_poisson) call prepare_poisson_cache(model, l, poisson_cache)
        ! refine the selected modes in parallel (independent eigenproblems)
-       !$omp parallel do private(w2, w2_out, y1, y2, niter, conv) schedule(dynamic)
+       !$omp parallel do private(w2, w2_out, y1, y2, y3, niter, conv) schedule(dynamic)
        do k = nstart+1, nres
           w2 = results(k)%mode%omega_ad**2
           call core2_eigenvector(mechanical_cache, w2, y1)
           if (config%use_poisson) then
              call core2_split_refine(model, l, mechanical_cache, w2, config, poisson_cache, &
-                  w2_out, y1, niter, conv)
+                  w2_out, y1, y3, niter, conv)
              results(k)%iterations = niter
              results(k)%converged = conv
           else
              w2_out = w2
+             allocate(y3(model%n))
+             y3 = 0.0_dp
              results(k)%iterations = 0
              results(k)%converged = .true.
           end if
           if (config%write_eigenfunctions) then
              call allocate_solution(results(k)%solution, model%n)
              allocate(y2(model%n))
-             call core2_y2_nodes(mechanical_cache, w2_out, y1, y2=y2)
-             call core2_fill_solution(model, l, w2_out, y1, y2, results(k)%solution)
+             call core2_y2_nodes(mechanical_cache, w2_out, y1, y3=y3, y2=y2)
+             call core2_fill_solution(model, l, w2_out, y1, y2, results(k)%solution, y3=y3)
              deallocate(y2)
           else
              results(k)%solution%n = model%n
@@ -917,6 +1006,7 @@ contains
              results(k)%solution%omega = cmplx(sqrt(max(tiny, w2_out)), 0.0_dp, kind=dp)
           end if
           if (allocated(y1)) deallocate(y1)
+          if (allocated(y3)) deallocate(y3)
        end do
        !$omp end parallel do
     end do

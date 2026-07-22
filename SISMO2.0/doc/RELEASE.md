@@ -1,4 +1,4 @@
-# SISMO 2.0 — release record (updated 2026-07-14)
+# SISMO 2.0 — release record (updated 2026-07-17)
 
 **SISMO — Split Inhomogeneous Solver for Modelling Oscillations**
 
@@ -51,7 +51,8 @@ of headroom because the top of the Sturm window includes f/p modes. Set
 `use_poisson = false` for a pure Cowling spectrum. `scan_points` is the
 endpoint-inclusive number of initial samples per degree. Set
 `write_eigenfunctions = true` only when full-grid mechanical `.eig` files are
-needed; their potential-related columns are currently zero.
+needed; with split refinement they include the selected mechanical and
+gravitational-potential state.
 
 ## Method (what this version uses)
 
@@ -70,6 +71,9 @@ needed; their potential-related columns are currently zero.
    iterate { phi <- shooting Poisson(mechanics) [frozen source, relax 0.4];
    forced response; sign-aligned incremental shape update; clamped Newton
    frequency step (finite-difference T'); best-iterate return }.
+   For text models with an atmosphere, the vacuum residuals are matched at the
+   recorded photospheric raccord; compact OSC models retain the final grid
+   point because that format has no raccord metadata.
 4. DIPOLE CLOSURE (`takata_closure = true`): for l=1 the shooting amplitude A
    (phi = phi_p + A*phi_h) is set by least-squares Takata J = 0 over the star
    (momentum conservation, PASJ 58, 893) instead of the vacuum surface BC.
@@ -79,24 +83,30 @@ needed; their potential-related columns are currently zero.
 ## Validation (1M5 intSISMO model, 25k points, l=1,2 n=1..100)
 
   vs OSC (same model = pure solver difference):
-      l=1: median 0.0019%, 99% <0.1%, max 0.21% over all 98 modes
-      l=2: median 0.0018%, 100% <0.1%, max 0.10% over all 100 modes
-      (f-mode 0.07%; every mode of the problem <0.21%)
+      l=1: median 0.0019%, 99% <0.1%, max 0.20% over all 98 modes
+      l=2: median 0.0018%, 99% <0.1%, max 0.14% over all 100 modes
+      (f-mode 0.14%; every compared mode <0.20%)
   vs GYRE (its own MESA grid; the ~0.22% floor is the mesa2SISMO re-mesh):
       l=1: 0.216% (100% <1%)   l=2: 0.217% (100% <1%)
       (OSC itself vs GYRE: 0.218% / 0.216%)
+  Reproducible input: tests/data/release_1M5.osc.mod
+  (SHA-256 fca1f0e6c00dc2624e5ea5664bc1db18f74f08b4a10660fb9498c5ec89b19316).
   Reference output: doc/release_reference_1M5.sismo (bit-identity checked
-  after every cleanup step).  Comparison figures + scripts:
-  ../1M5/compare_core2_{gyre,osc}.png, make_compare.py, make_compare_osc.py.
+  after every cleanup step). Comparison figures:
+  article/FIGS/compare_core2_{gyre,osc}.png.
+
+  Reproduce the reference from the repository root with:
+
+      OMP_NUM_THREADS=2 make -C SISMO2.0 regression
 
 ## Timing (18 threads, same host, l=1,2 n=1..100)
 
   GYRE 8.1                 9.4 s wall     71 s CPU   (1131-pt MESA profile)
   OSC  (scang, oscQI=2)   72.5 s        1095 s       (25k intSISMO)
   SISMO 1 (canonical)    72.7 s         905 s       (25k intSISMO)
-  SISMO 2.0 (optimized)   1.9 s          28 s       (25k intSISMO, full grid)
-  -> about 38x less CPU time than OSC and SISMO 1 on the same model; 216 modes
-     including f/p.
+  SISMO 2.0 (optimized)   1.7 s          28 s       (25k intSISMO, full grid)
+  -> about 39x less CPU time than OSC and 32x less than SISMO 1 on the same
+     model; 216 modes including f/p.
 
 ## Optimization validation (2026-07-14)
 
@@ -112,12 +122,20 @@ stable comparison because wall time is short and sensitive to host scheduling.
 | Reusable solve/scan workspaces | 2.09 s | 31.01 s | byte-identical to preceding stage |
 | Lazy eigenfunction storage | 2.10 s | 30.94 s | byte-identical; peak RSS 806 -> 372 MB |
 | Default 2,000-point scan | 1.88 s | 27.99 s | same 216 ordered modes and 149/152 scan roots |
+| Robustness corrections | 1.69 s | 27.98 s | same 216 mode labels; 151/154 scan roots |
 
-Relative to the previous implementation, the final result uses 40.6% less CPU
-time and 34.3% less wall time. Default and explicit `scan_points = 2000`
+Relative to the previous implementation, the final result uses 40.7% less CPU
+time and 40.9% less wall time. Default and explicit `scan_points = 2000`
 configurations are byte-identical, as are 1-thread and 18-thread outputs.
 Against OSC, the final medians are 0.00194% (l=1) and 0.00176% (l=2); the
-maxima are 0.204% and 0.0558%, and every compared mode remains below 1%.
+maxima are 0.200% and 0.138%, and every compared mode remains below 1%.
+
+The centre-boundary and whole-state snapshot corrections intentionally change
+a few low-order, non-converged best iterates relative to the pre-correction
+reference: 209 of 216 frequencies change by less than 0.01%, 214 change by
+less than 0.1%, and the largest change is 0.486%. The Cowling seeds change by
+less than $10^{-6}$ percent, no mode is added, removed, or relabelled, and the
+direct OSC accuracy statistics above remain the scientific acceptance test.
 
 Compared with the previous 9,201-sample sweep, seven Cowling roots change by
 at most 7.32e-10 relatively. The difficult low-order modes that do not satisfy
@@ -139,8 +157,9 @@ default, rather than bit identity with the previous scan density.
                              Sturm scan, split refinement, driver
   src/main.f90               configuration loading + driver call
   doc/second_order_cowling.md   derivation of the second-order core
-  doc/core2_status.md           full development/validation log
+  doc/core2_status.md           historical development/validation log
   doc/release_reference_1M5.sismo   bit-identity reference output
+  tests/data/release_1M5.osc.mod    exact numerical-regression input
 
 ## Known limits / next development
 

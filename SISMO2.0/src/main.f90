@@ -6,8 +6,8 @@
 ! Pipeline per degree l:
 !   1. STURM SCAN of the Cowling operator (parallel sweep + bisection of the
 !      parity of negative pivots + negative face denominators) -> the complete,
-!      labeled spectrum (g, f, p) on the full model grid.  No seeding, no
-!      asymptotics (the asymptotic relation only sets the frequency window).
+!      labeled spectrum (g, f, p) on the full model grid.  Asymptotics only
+!      size the scan window; they never provide mode-frequency seeds.
 !   2. SPLIT REFINEMENT of each mode: the frozen potential phi is recomputed
 !      from the mechanics by the inhomogeneous shooting Poisson solve at every
 !      step (for l=1 closed by Takata's first integral when takata_closure is
@@ -25,14 +25,14 @@ program sismo
   character(len=2048) :: structure_file, output_base, config_file, arg
   type(stellar_model) :: model
   type(iteration_config) :: config
-  integer :: narg
+  integer :: narg, iarg
   integer :: l_min, l_max, g_min, g_max
 
   narg = command_argument_count()
-  if (narg == 1) then
-     call get_command_argument(1, arg)
+  do iarg = 1, narg
+     call get_command_argument(iarg, arg)
      if (trim(arg) == '--help' .or. trim(arg) == '-h') call usage(0)
-  end if
+  end do
 
   if (narg < 2 .or. narg > 3) then
      if (narg > 3) then

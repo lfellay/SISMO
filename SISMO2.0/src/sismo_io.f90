@@ -190,16 +190,16 @@ contains
     if (ios /= 0) call fatal('cannot read OSC binary model zones '//trim(filename))
 
     call allocate_model(model, n)
-    ! intSISMO writes a <base>.grid.d sidecar carrying GRID_STEP so a .osc.mod can
-    ! drive the multigrid stride sequence (essential for l=1 convergence); without it
-    ! grid_step defaults to 1 -> single stride -> l=1 collapses.  (The .sta1.d path
-    ! reads the same sidecar in read_intSISMO_model.)
+    ! Preserve intSISMO's GRID_STEP conversion metadata when its sidecar is
+    ! available. SISMO itself always solves on the complete imported grid.
     model%grid_step = read_grid_step_sidecar(filename)
     model%radius = globals(1)
     model%mass = globals(2)
     dyn_freq = sqrt(max(tiny, globals(3)*globals(2)/globals(1)**3))
     model%fdy = dyn_freq/(2.0_dp*pi)*1.0d6
     model%tdy = 1.0d6/(max(tiny, model%fdy)*2.0_dp*pi)
+    ! The OSC z payload is a generic segmentation table, not a classified
+    ! convective-zone table. Do not mislabel it as model%zc metadata.
     model%nzc = 0
     model%zc = 0
 
@@ -433,7 +433,8 @@ contains
        end if
     end if
 
-    write(filename,'(A,"_l",I0,"_n",I0,".eig")') trim(base), result%mode%l, result%mode%n
+    write(filename,'(A,"_l",I0,"_m",I0,"_k",I0,"_n",I0,".eig")') trim(base), &
+         result%mode%l, result%mode%m, result%mode%k, result%mode%n
     open(newunit=unit, file=trim(filename), status='replace', action='write', iostat=ios)
     if (ios /= 0) call fatal('cannot open eigenfunction output '//trim(filename))
     write(unit,'(A)') '# i x Re_xi_r Re_xi_h Re_dpp Re_phi Im_xi_r Im_xi_h Im_dpp Im_phi Re_theta Im_theta Re_phi_osc Im_phi_osc Re_theta_osc Im_theta_osc'
@@ -561,7 +562,7 @@ contains
     if (ntok < 1) call fatal('empty convective-zone values')
     do i = 1, ntok
        read(words(i), *, iostat=ios) ints(i)
-       if (ios /= 0) ints(i) = 0
+       if (ios /= 0) call fatal('invalid convective-zone integer: '//trim(words(i)))
     end do
     model%nzc = ints(1)
     if (model%nzc < 0 .or. model%nzc > 50) call fatal('invalid convective-zone count')
@@ -578,6 +579,10 @@ contains
     do i = 1, model%nzc
        model%zc(i,1) = ints(offset + 2*i - 1)
        model%zc(i,2) = ints(offset + 2*i)
+       if (model%zc(i,1) < 0 .or. model%zc(i,2) < model%zc(i,1) .or. &
+            model%zc(i,2) > model%n) then
+          call fatal('invalid convective-zone bounds')
+       end if
     end do
   end subroutine parse_convective_zones
 
@@ -812,7 +817,9 @@ contains
 
     gridfile = trim(filename)//'.grid.d'
     lt = len_trim(filename)
-    if (has_suffix(trim(filename), '.sta1.d')) then
+    if (has_suffix(trim(filename), '.osc.mod')) then
+       if (lt > 8) gridfile = filename(1:lt-8)//'.grid.d'
+    else if (has_suffix(trim(filename), '.sta1.d')) then
        if (lt > 7) gridfile = filename(1:lt-7)//'.grid.d'
     else if (has_suffix(trim(filename), '.d')) then
        if (lt > 2) gridfile = filename(1:lt-2)//'.grid.d'
@@ -865,14 +872,20 @@ contains
     in_word = .false.
     start = 1
     do i = 1, n+1
-       if (i <= n .and. line(i:i) /= ' ' .and. line(i:i) /= char(9)) then
-          if (.not. in_word) then
-             start = i
-             in_word = .true.
+       if (i <= n) then
+          if (line(i:i) /= ' ' .and. line(i:i) /= char(9)) then
+             if (.not. in_word) then
+                start = i
+                in_word = .true.
+             end if
+             cycle
           end if
-       else if (in_word) then
+       end if
+       if (in_word) then
+          if (ntok >= size(words)) call fatal('too many values in one input record')
+          if (i - start > len(words(1))) call fatal('convective-zone token is too long')
           ntok = ntok + 1
-          if (ntok <= size(words)) words(ntok) = line(start:i-1)
+          words(ntok) = line(start:i-1)
           in_word = .false.
        end if
     end do

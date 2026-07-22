@@ -84,8 +84,9 @@ With x = r/R and the intSISMO/OSC structure arrays (GM = R = 1 units):
     s2 = qx3 = m(x)/x^3      ->  g_hat      = s2 * x
     s3 = P/rho, s5 = Gamma1  ->  c^2_hat    = s5 * s3
     s4 = rho
-    s6 = aosc                ->  N^2_hat    = s2 * s6 * x^2
-                                 (from brunt_integral: sqrt(s2*|s6|) = N/x)
+    s6 = aosc                ->  N^2_hat    = -s2 * s6 * x^2
+                                 (OSC convention: stable layers have s6 < 0,
+                                  so sqrt(max(0,-s2*s6)) = N/x)
     L_l^2_hat = l(l+1) * s5 * s3 / x^2
     sigma^2   = omega^2 (the code's dimensionless lambda)
 

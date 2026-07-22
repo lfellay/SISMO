@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out SISMO
+        uses: actions/checkout@v6
+
+      - name: Install GNU Fortran
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gfortran
+
+      - name: Check installer syntax
+        run: sh -n install.sh
+
+      - name: Build and test SISMO
+        run: make -C SISMO2.0 clean test
+
+      - name: Reproduce the 216-mode numerical reference
+        env:
+          OMP_NUM_THREADS: 2
+        run: make -C SISMO2.0 regression
+
+      - name: Debug-build intSISMO
+        run: make -C intSISMO clean all debug=yes
+
+      - name: Build mesa2SISMO
+        run: make -C mesa2SISMO clean all
+
+      - name: Exercise the complete installer
+        run: ./install.sh --bin-dir "$RUNNER_TEMP/sismo-bin"
